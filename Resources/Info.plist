@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>JarvisNotch</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.eytanerez.JarvisNotch</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>JarvisNotch</string>
+  <key>CFBundleDisplayName</key>
+  <string>Jarvis</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>26.0</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Jarvis needs Automation permission to read browser context and control Spotify when you ask.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Jarvis needs microphone access so you can speak commands with Option-Space.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Jarvis uses Apple speech recognition to transcribe your voice locally when available.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Jarvis uses screen capture only as a fallback when text context is unavailable.</string>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>Personal app for Eytan Erez.</string>
+</dict>
+</plist>

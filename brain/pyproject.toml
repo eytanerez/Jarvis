@@ -1,0 +1,29 @@
+[project]
+name = "jarvis-brain"
+version = "0.1.0"
+description = "Local FastAPI brain for JarvisNotch"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "pydantic>=2.7",
+  "httpx>=0.27",
+  "mem0ai>=0.1.100",
+  "chromadb>=0.5.0",
+  "openai>=1.0",
+  "anthropic>=0.40",
+  "google-genai>=1.0",
+  "kokoro-onnx>=0.5.0",
+  "soundfile>=0.12",
+  "pytest>=8.0"
+]
+
+[project.optional-dependencies]
+chatterbox = [
+  # Chatterbox runs in brain/.venv-chatterbox because it needs NumPy 1.x,
+  # while Kokoro in the main brain venv needs NumPy 2.x.
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

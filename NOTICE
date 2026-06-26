@@ -1,0 +1,13 @@
+JarvisNotch - NOTICE
+
+This product includes notch UI code adapted from Atoll (DynamicIsland), which
+itself includes code derived from the boring.notch project.
+
+Atoll (DynamicIsland)
+Copyright (C) 2024-2026 Atoll Contributors
+License: GNU General Public License v3.0 or later
+Source: https://github.com/Ebullioscopic/Atoll
+
+boring.notch
+Referenced by Atoll NOTICE as the foundational codebase for portions of the
+notch interaction model.

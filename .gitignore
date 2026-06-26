@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+.swiftpm/
+dist/
+brain/.venv/
+brain/.venv-chatterbox/
+brain/.pytest_cache/
+brain/__pycache__/
+brain/app/__pycache__/
+brain/tests/__pycache__/
+*.pyc

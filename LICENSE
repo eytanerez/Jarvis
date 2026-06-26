@@ -1,0 +1,7 @@
+JarvisNotch includes code adapted from Atoll (DynamicIsland) and boring.notch.
+
+SPDX-License-Identifier: GPL-3.0-or-later
+
+The copied/adapted notch UI portions are licensed under the GNU General Public
+License version 3 or later. See the full license text at:
+https://www.gnu.org/licenses/gpl-3.0.txt
