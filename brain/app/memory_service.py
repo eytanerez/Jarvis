@@ -8,12 +8,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .core.model_catalog import get_model_catalog
 from .runtime_secrets import RuntimeSecrets
 
 
 class MemoryService:
     def __init__(self, secrets: Optional[RuntimeSecrets] = None) -> None:
         self.secrets = secrets or RuntimeSecrets.from_environment()
+        # Share the same model catalog as ProviderManager so stale-model remaps
+        # and gemini aliases live in exactly one place (config, not source).
+        self.catalog = get_model_catalog()
         self.home = Path(os.environ.get("JARVIS_BRAIN_HOME", Path.home() / "Library/Application Support/JarvisNotch"))
         self.home.mkdir(parents=True, exist_ok=True)
         self.fallback_path = self.home / "memories.json"
@@ -289,18 +293,14 @@ class MemoryService:
         }
 
     def _openai_model(self, model: str) -> str:
-        if model.strip().lower() in {"", "gpt-5.5", "gpt-5.4-mini", "gpt-5-nano"}:
-            return "gpt-5-mini"
+        if model.strip().lower() in self.catalog.stale_models("openai"):
+            return self.catalog.stale_replacement("openai")
         return model
 
     def _gemini_model(self, model: str) -> str:
-        replacements = {
-            "gemini-3.1-flash-light": "gemini-3.1-flash-lite",
-            "gemini-2.5-flash-light": "gemini-2.5-flash-lite",
-            "gemini-2.0-flash-light": "gemini-2.0-flash-lite",
-        }
         normalized = model.strip()
-        return replacements.get(normalized.lower(), normalized or "gemini-2.0-flash")
+        aliases = self.catalog.aliases("gemini")
+        return aliases.get(normalized.lower(), normalized or self.catalog.default("gemini", "fast"))
 
     def _required_key(self, provider: str) -> str:
         key = self.secrets.key_for(provider)

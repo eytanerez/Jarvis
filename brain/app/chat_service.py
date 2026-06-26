@@ -9,7 +9,7 @@ from .file_index import FileIndexService
 from .core.assistant_response_composer import AssistantResponseComposer
 from .core.capabilities import CapabilityRegistry
 from .core.local_skills import LocalSkillExecutor, LocalSkillInvocation, LocalSkillRegistry, builtin_local_skills
-from .core.model_router import ModelRouter
+from .core.model_router import ModelRouter, provider_model_route
 from .core.modes import ModeRegistry
 from .core.prompts import PromptService
 from .core.self_model.capability_manifest import CapabilityManifest
@@ -182,11 +182,13 @@ class ChatService:
             )
             warnings = list(prepared.get("warnings") or [])
             trace.set_selected_skill(f"bundle:{bundle.get('name')}", loaded=True)
-            trace.set_model_route("gemini_smart")
             answer = await self.providers.complete(
                 self._bundle_messages(message, context, session, prepared, capability_manifest),
                 task_type="smart",
             )
+            bundle_provider = self.providers.last_metadata().get("provider")
+            bundle_route = provider_model_route(bundle_provider, "smart", "gemini_smart")
+            trace.set_model_route(bundle_route)
             metadata = self._provider_metadata(
                 context,
                 used_screen_context=self._context_has_any_text(context),
@@ -195,7 +197,7 @@ class ChatService:
             metadata.update(
                 {
                     "route": "skill_bundle",
-                    "modelRoute": "gemini_smart",
+                    "modelRoute": bundle_route,
                     "why": "skill bundle invoked for recurring workflow",
                     "selectedSkill": f"bundle:{bundle.get('name')}",
                     "selectedCapability": "skills.run_skill",
@@ -254,16 +256,55 @@ class ChatService:
                     },
                 ))
             if web_mode == "real_provider":
+                if not self.web.real_provider_configured:
+                    return finish(self.response(
+                        "Real web search is selected, but no real web search provider is configured yet.",
+                        speak="Real web search is not configured yet.",
+                        model_used="Web search",
+                        metadata={
+                            "route": "web_search",
+                            "selectedCapability": "web.search",
+                            "usedWeb": False,
+                            "webSearchMode": web_mode,
+                            "warnings": ["Set JARVIS_WEB_SEARCH_API_URL and JARVIS_WEB_SEARCH_API_KEY to enable real web search."],
+                        },
+                    ))
+                try:
+                    live_results = self.web.search(message, limit=5)
+                except Exception as exc:
+                    return finish(self.response(
+                        "I tried a live web search, but the provider request failed.",
+                        speak="The live web search provider request failed.",
+                        model_used="Web search",
+                        metadata={
+                            "route": "web_search",
+                            "selectedCapability": "web.search",
+                            "usedWeb": False,
+                            "webSearchMode": web_mode,
+                            "warnings": [str(exc)],
+                        },
+                    ))
+                live_actions = [
+                    {
+                        "id": "open_search_results",
+                        "type": "open_urls",
+                        "payload": {
+                            "newWindow": True,
+                            "urls": [result["url"] for result in live_results],
+                        },
+                    }
+                ]
                 return finish(self.response(
-                    "Real web search is selected, but no real web search provider is configured yet.",
-                    speak="Real web search is not configured yet.",
+                    "Here are live web search results." if live_results else "The web search returned no results.",
+                    speak="Here are the web results." if live_results else "I didn't find any web results.",
+                    results=live_results,
+                    actions=live_actions if live_results else None,
                     model_used="Web search",
                     metadata={
                         "route": "web_search",
                         "selectedCapability": "web.search",
-                        "usedWeb": False,
+                        "usedWeb": True,
                         "webSearchMode": web_mode,
-                        "warnings": ["Real web search provider is not implemented/configured."],
                     },
                 ))
             results = self.web.search(message, limit=5)
@@ -366,15 +407,18 @@ class ChatService:
             context=context,
             requested_task_type=self._task_type(message, context, session, mode),
         )
-        trace.set_model_route(route.model_route)
         answer = await self.providers.complete(messages, task_type=route.task_type)
+        # Label the route by the provider that actually answered (the chain may
+        # not be Gemini), so telemetry/trace stop reporting fiction.
+        actual_provider = self.providers.last_metadata().get("provider")
+        trace.set_model_route(route.resolved_route(actual_provider))
         relevant_memories = self._relevant_memories(message)
         metadata = self._provider_metadata(
             context,
             used_screen_context=self._context_has_any_text(context),
             used_memory=bool(relevant_memories),
         )
-        metadata.update(route.to_metadata())
+        metadata.update(route.to_metadata(actual_provider))
         metadata.setdefault("selectedCapability", "assistant.answer_general_question")
         return finish(self.response(
             answer,

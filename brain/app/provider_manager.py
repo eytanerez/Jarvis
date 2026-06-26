@@ -5,16 +5,20 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from .core.model_catalog import ModelCatalog, get_model_catalog
 from .runtime_secrets import RuntimeSecrets
 
 
 class ProviderManager:
-    STALE_OPENAI_MODELS = {"", "gpt-5.5", "gpt-5.4-mini", "gpt-5-nano"}
-    OPENAI_FALLBACK_MODELS = ["gpt-4.1-mini", "gpt-5-mini", "gpt-4o-mini"]
-    GEMINI_FALLBACK_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"]
-
-    def __init__(self, secrets: Optional[RuntimeSecrets] = None) -> None:
+    def __init__(
+        self,
+        secrets: Optional[RuntimeSecrets] = None,
+        catalog: Optional[ModelCatalog] = None,
+    ) -> None:
         self.secrets = secrets or RuntimeSecrets.from_environment()
+        # Model names/fallbacks/stale remaps live in the catalog (config), not
+        # in source — see app/core/model_catalog.json.
+        self.catalog = catalog or get_model_catalog()
         self._attempts: List[Dict[str, Any]] = []
         self._last_model_used: Optional[str] = None
         self._last_metadata: Dict[str, Any] = {}
@@ -220,12 +224,12 @@ class ProviderManager:
             return await self._openai_responses_http(httpx, messages, model, task_type)
 
         client = AsyncOpenAI(api_key=self._required_key("openai"), timeout=25)
-        instructions, input_text = self._openai_input(messages)
+        instructions, input_messages = self._openai_input(messages)
         kwargs = self._openai_response_kwargs(model, task_type)
         response = await client.responses.create(
             model=model,
             instructions=instructions or None,
-            input=input_text,
+            input=input_messages,
             max_output_tokens=900,
             **kwargs,
         )
@@ -235,10 +239,10 @@ class ProviderManager:
         return self._extract_openai_text(response.model_dump())
 
     async def _openai_responses_http(self, httpx: Any, messages: List[Dict[str, str]], model: str, task_type: str) -> str:
-        instructions, input_text = self._openai_input(messages)
+        instructions, input_messages = self._openai_input(messages)
         body: Dict[str, Any] = {
             "model": model,
-            "input": input_text,
+            "input": input_messages,
             "max_output_tokens": 900,
         }
         body.update(self._openai_response_kwargs(model, task_type))
@@ -254,7 +258,7 @@ class ProviderManager:
             return self._extract_openai_text(response.json())
 
     async def _anthropic(self, httpx: Any, messages: List[Dict[str, str]], task_type: str) -> str:
-        model = self._model_for("JARVIS_ANTHROPIC", task_type, "claude-sonnet-4-6")
+        model = self._model_for("JARVIS_ANTHROPIC", task_type, self.catalog.default("anthropic", task_type))
         system = "\n".join(message["content"] for message in messages if message["role"] == "system")
         user_messages = [message for message in messages if message["role"] != "system"]
         async with httpx.AsyncClient(timeout=25) as client:
@@ -287,13 +291,33 @@ class ProviderManager:
         raise ValueError("Gemini request failed before it was sent")
 
     async def _gemini_once(self, httpx: Any, messages: List[Dict[str, str]], model: str) -> str:
-        prompt = "\n".join(f"{message['role']}: {message['content']}" for message in messages)
+        # Map onto Gemini's native shape: system prompt -> system_instruction,
+        # and each turn -> a contents entry with the role Gemini expects
+        # ("model" for assistant turns). Previously the whole conversation was
+        # flattened into one "role: content" text blob with no role structure,
+        # which degraded instruction-following relative to Anthropic/OpenAI.
+        system_text = "\n".join(
+            message["content"] for message in messages if message["role"] == "system"
+        ).strip()
+        contents = [
+            {
+                "role": "model" if message["role"] == "assistant" else "user",
+                "parts": [{"text": message["content"]}],
+            }
+            for message in messages
+            if message["role"] != "system"
+        ]
+        if not contents:
+            contents = [{"role": "user", "parts": [{"text": ""}]}]
+        body: Dict[str, Any] = {"contents": contents}
+        if system_text:
+            body["system_instruction"] = {"parts": [{"text": system_text}]}
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         async with httpx.AsyncClient(timeout=25) as client:
             response = await client.post(
                 url,
                 params={"key": self._required_key("gemini")},
-                json={"contents": [{"parts": [{"text": prompt}]}]},
+                json=body,
             )
             response.raise_for_status()
             data = response.json()
@@ -314,55 +338,53 @@ class ProviderManager:
         if provider == "openai":
             return self._openai_model(self._model_for("JARVIS_OPENAI", task_type, self._openai_default(task_type)))
         if provider == "anthropic":
-            return self._model_for("JARVIS_ANTHROPIC", task_type, "claude-sonnet-4-6")
+            return self._model_for("JARVIS_ANTHROPIC", task_type, self.catalog.default("anthropic", task_type))
         if provider == "gemini":
             return self._gemini_model(self._model_for("JARVIS_GEMINI", task_type, self._gemini_default(task_type)))
         return None
 
-    def _openai_input(self, messages: List[Dict[str, str]]) -> tuple[str, str]:
+    def _openai_input(self, messages: List[Dict[str, str]]) -> tuple[str, List[Dict[str, str]]]:
+        # Preserve the real role structure instead of flattening into one
+        # "role: content" string. System messages become the Responses API
+        # `instructions`; everything else stays as a typed message list so the
+        # model sees the same turn boundaries Anthropic already receives.
         instructions = "\n".join(message["content"] for message in messages if message["role"] == "system")
-        input_text = "\n\n".join(
-            f"{message['role']}: {message['content']}"
+        input_messages = [
+            {"role": message["role"], "content": message["content"]}
             for message in messages
             if message["role"] != "system"
-        ).strip()
-        return instructions, input_text or "user:"
+        ]
+        if not input_messages:
+            input_messages = [{"role": "user", "content": ""}]
+        return instructions, input_messages
 
     def _openai_model(self, model: str) -> str:
         normalized = model.strip()
-        if normalized.lower() in self.STALE_OPENAI_MODELS:
-            return "gpt-5-mini"
+        if normalized.lower() in self.catalog.stale_models("openai"):
+            return self.catalog.stale_replacement("openai")
         return normalized
 
     def _openai_default(self, task_type: str) -> str:
-        if task_type in {"smart", "reasoning"}:
-            return "gpt-5-mini"
-        return "gpt-4.1-mini"
+        return self.catalog.default("openai", task_type)
 
     def _openai_model_candidates(self, preferred: str) -> List[str]:
         candidates = [preferred]
-        for model in self.OPENAI_FALLBACK_MODELS:
+        for model in self.catalog.fallbacks("openai"):
             if model not in candidates:
                 candidates.append(model)
         return candidates
 
     def _gemini_model(self, model: str) -> str:
         normalized = model.strip()
-        replacements = {
-            "gemini-3.1-flash-light": "gemini-3.1-flash-lite",
-            "gemini-2.5-flash-light": "gemini-2.5-flash-lite",
-            "gemini-2.0-flash-light": "gemini-2.0-flash-lite",
-        }
-        return replacements.get(normalized.lower(), normalized or self._gemini_default("fast"))
+        aliases = self.catalog.aliases("gemini")
+        return aliases.get(normalized.lower(), normalized or self._gemini_default("fast"))
 
     def _gemini_default(self, task_type: str) -> str:
-        if task_type in {"smart", "reasoning"}:
-            return "gemini-3.5-flash"
-        return "gemini-3.1-flash-lite"
+        return self.catalog.default("gemini", task_type)
 
     def _gemini_model_candidates(self, preferred: str) -> List[str]:
         candidates = [preferred]
-        for model in self.GEMINI_FALLBACK_MODELS:
+        for model in self.catalog.fallbacks("gemini"):
             if model not in candidates:
                 candidates.append(model)
         return candidates

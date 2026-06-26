@@ -19,6 +19,8 @@ if TYPE_CHECKING:  # avoid importing heavy modules at type-check time only
     from ..dictation import DictationService
     from ..tts_service import TTSService
     from ..web_search import WebSearch
+    from ..atoll_bridge import AtollBridge
+    from ..spotify_service import SpotifyService
 
 
 class ServiceContainer:
@@ -48,6 +50,8 @@ class ServiceContainer:
         self._capability_registry: Optional["CapabilityRegistry"] = None
         self._dictation_service: Optional["DictationService"] = None
         self._chat_service: Optional["ChatService"] = None
+        self._atoll_bridge: Optional["AtollBridge"] = None
+        self._spotify_service: Optional["SpotifyService"] = None
 
     @property
     def performance(self) -> PerformanceSettings:
@@ -149,6 +153,24 @@ class ServiceContainer:
             return self._skill_manager
 
     @property
+    def atoll_bridge(self) -> "AtollBridge":
+        with self._lock:
+            if self._atoll_bridge is None:
+                from ..atoll_bridge import AtollBridge
+
+                self._atoll_bridge = AtollBridge()
+            return self._atoll_bridge
+
+    @property
+    def spotify_service(self) -> "SpotifyService":
+        with self._lock:
+            if self._spotify_service is None:
+                from ..spotify_service import SpotifyService
+
+                self._spotify_service = SpotifyService(secrets=self.runtime_secrets)
+            return self._spotify_service
+
+    @property
     def capability_registry(self) -> "CapabilityRegistry":
         with self._lock:
             if self._capability_registry is None:
@@ -162,6 +184,8 @@ class ServiceContainer:
                     skill_manager=self.skill_manager,
                     dictation=self.dictation_service,
                     tts=self.tts_service,
+                    atoll=self.atoll_bridge,
+                    spotify=self.spotify_service,
                 )
             return self._capability_registry
 

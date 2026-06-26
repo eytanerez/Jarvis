@@ -11,11 +11,15 @@ SECRET_PATTERNS = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
 ]
 
+# Denylist of obviously risky shell snippets. This is signage, not a sandbox:
+# it is trivially evadable (flag reordering, obfuscation) and must never be
+# treated as a reason to skip the human confirmation step, which is the real
+# boundary. Compiled case-insensitively so "RM -RF" is flagged like "rm -rf".
 DANGEROUS_SCRIPT_PATTERNS = [
-    re.compile(r"\brm\s+-rf\b"),
-    re.compile(r"\bsudo\b"),
-    re.compile(r"\bcurl\b.+\|\s*(sh|bash|zsh)\b"),
-    re.compile(r"\bchmod\s+777\b"),
+    re.compile(r"\brm\s+-rf\b", re.IGNORECASE),
+    re.compile(r"\bsudo\b", re.IGNORECASE),
+    re.compile(r"\bcurl\b.+\|\s*(sh|bash|zsh)\b", re.IGNORECASE),
+    re.compile(r"\bchmod\s+777\b", re.IGNORECASE),
 ]
 
 

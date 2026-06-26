@@ -18,6 +18,9 @@ class CapabilityLoader:
         skill_manager: Optional[Any] = None,
         dictation: Optional[Any] = None,
         tts: Optional[Any] = None,
+        atoll: Optional[Any] = None,
+        spotify: Optional[Any] = None,
+        scheduler: Optional[Any] = None,
     ) -> None:
         self.providers = providers
         self.memory = memory
@@ -26,6 +29,9 @@ class CapabilityLoader:
         self.skill_manager = skill_manager
         self.dictation = dictation
         self.tts = tts
+        self.atoll = atoll
+        self.spotify = spotify
+        self.scheduler = scheduler
 
     def load(
         self,
@@ -426,7 +432,37 @@ class CapabilityLoader:
                 how_to_use="Enable shell actions explicitly and review the command before confirming.",
             ),
         ]
-        return [capability for capability in capabilities if self._mode_allowed(capability, mode)]
+        capabilities.extend(self._catalog_capabilities(connectors))
+        seen: set[str] = set()
+        deduped = []
+        for capability in capabilities:
+            if capability.id in seen:
+                continue
+            seen.add(capability.id)
+            deduped.append(capability)
+        return [capability for capability in deduped if self._mode_allowed(capability, mode)]
+
+    def _catalog_capabilities(self, connectors: set[str]) -> list[Capability]:
+        """Build canonical catalog-derived capabilities from live executor state."""
+        try:
+            from ..catalog import build_context, catalog_capabilities
+        except Exception:
+            return []
+        try:
+            ctx = build_context(
+                providers=self.providers,
+                file_index=self.file_index,
+                web=self.web,
+                memory=self.memory,
+                tts=self.tts,
+                scheduler=self.scheduler,
+                atoll=self.atoll,
+                spotify=self.spotify,
+                enabled_connectors=connectors,
+            )
+            return catalog_capabilities(ctx)
+        except Exception:
+            return []
 
     def _cap(self, *args: Any, **kwargs: Any) -> Capability:
         if "enabled" not in kwargs:

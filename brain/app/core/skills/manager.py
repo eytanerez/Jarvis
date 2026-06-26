@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ..catalog import SkillCatalogGenerator
+from ..catalog.definitions import CATALOG
 from .approval import SkillApprovalStore
 from .bundles import SkillBundleStore
 from .catalog import SkillCatalog
@@ -16,28 +18,12 @@ from .registry import SkillRegistry
 from .security import SkillSecurity
 
 
-SKILL_CATEGORIES = [
-    "assistant",
-    "browser",
-    "calendar",
-    "communication",
-    "dev",
-    "dictation",
-    "email",
-    "files",
-    "macos",
-    "memory",
-    "messages",
-    "personal",
-    "reminders",
-    "research",
-    "skills",
-    "tts",
-    "calibre",
-    ".hub",
-    ".pending",
-    ".audit",
-]
+# Hidden working directories the registry skips when loading skills.
+SKILL_WORK_DIRS = [".hub", ".pending", ".audit"]
+
+# Folder categories the catalog manages, plus the working dirs. Built from the
+# canonical catalog so the layout always matches the single source of truth.
+SKILL_CATEGORIES = sorted({defn.category for defn in CATALOG}) + SKILL_WORK_DIRS
 
 
 class SkillManager:
@@ -48,8 +34,10 @@ class SkillManager:
         self.bundles_root = Path(os.environ.get("JARVIS_SKILL_BUNDLES_HOME", self.app_support_root / "skill-bundles")).expanduser()
         self.security = SkillSecurity()
         self.loader = SkillLoader(self.security)
+        self.generator = SkillCatalogGenerator(self.skills_root)
         self._ensure_layout()
-        self._ensure_builtin_skill_files()
+        self.catalog_status = self.generator.ensure()
+        self._ensure_starter_bundle()
         external = [Path(item).expanduser() for item in os.environ.get("JARVIS_EXTERNAL_SKILL_DIRS", "").split(os.pathsep) if item.strip()]
         self.registry = SkillRegistry([self.skills_root, *external], loader=self.loader)
         self.catalog = SkillCatalog(self.registry)
@@ -216,6 +204,8 @@ class SkillManager:
                 "allowRemoteSkillInstall": False,
                 "root": str(self.skills_root),
                 "bundlesRoot": str(self.bundles_root),
+                "catalog": dict(self.catalog_status),
+                "duplicateWarnings": list(self.registry.duplicate_warnings),
             }
         }
 
@@ -244,53 +234,16 @@ class SkillManager:
             + "\n\n".join(skill_sections)
         )
 
+    def duplicate_warnings(self) -> list[str]:
+        self.registry.reload()
+        return list(self.registry.duplicate_warnings)
+
     def _ensure_layout(self) -> None:
         for category in SKILL_CATEGORIES:
             (self.skills_root / category).mkdir(parents=True, exist_ok=True)
         self.bundles_root.mkdir(parents=True, exist_ok=True)
 
-    def _ensure_builtin_skill_files(self) -> None:
-        builtins = {
-            "assistant/jarvis-explain-capabilities": ("jarvis-explain-capabilities", "Explain live Jarvis capabilities and limits", "green", "quick_assistant"),
-            "assistant/time-date": ("time-date", "Answer time and date locally", "green", "quick_assistant"),
-            "browser/browser-summarize-page": ("browser-summarize-page", "Summarize captured browser page text", "green", "quick_assistant"),
-            "calendar/calendar-find-free-time": ("calendar-find-free-time", "Find free time from local schedule context", "green", "daily_brief"),
-            "calendar/calendar-today": ("calendar-today", "Summarize today's calendar", "green", "daily_brief"),
-            "dictation/dictation-cleanup": ("dictation-cleanup", "Clean and format dictated text", "green", "dictation"),
-            "email/email-draft-reply": ("email-draft-reply", "Draft email replies from context", "yellow", "email_writer"),
-            "files/files-search": ("files-search", "Search approved local file index", "green", "deep_research"),
-            "files/files-summarize": ("files-summarize", "Summarize approved local files", "green", "deep_research"),
-            "macos/mac-open-app": ("mac-open-app", "Open macOS applications by name", "green", "quick_assistant"),
-            "macos/mac-open-url": ("mac-open-url", "Open websites or URLs with confirmation", "yellow", "quick_assistant"),
-            "macos/mac-take-screenshot": ("mac-take-screenshot", "Take screenshots with confirmation", "yellow", "quick_assistant"),
-            "memory/memory-add": ("memory-add", "Store explicit user memories", "green", "quick_assistant"),
-            "memory/memory-search": ("memory-search", "Search saved user memories", "green", "quick_assistant"),
-            "messages/message-draft-reply": ("message-draft-reply", "Draft message replies from visible context", "yellow", "quick_assistant"),
-            "reminders/reminder-create": ("reminder-create", "Create reminders after confirmation", "yellow", "quick_assistant"),
-            "skills/jarvis-learn-skill": ("jarvis-learn-skill", "Stage reusable skills from workflows", "green", "skill_learning"),
-            "skills/jarvis-approve-skill": ("jarvis-approve-skill", "Approve staged skill changes", "yellow", "skill_learning"),
-            "macos/macos-open-app": ("macos-open-app", "Open macOS applications by name", "green", "quick_assistant"),
-            "macos/macos-screenshot": ("macos-screenshot", "Take screenshots with confirmation", "yellow", "quick_assistant"),
-            "macos/browser-open-url": ("browser-open-url", "Open websites or search queries", "yellow", "quick_assistant"),
-            "macos/time-date": ("time-date", "Answer time and date locally", "green", "quick_assistant"),
-            "writing/document-rewrite-selection": ("document-rewrite-selection", "Rewrite selected document text", "green", "document_editor"),
-            "writing/document-summarize-current": ("document-summarize-current", "Summarize selected or current document", "green", "document_editor"),
-            "communication/email-draft-reply": ("email-draft-reply", "Draft email replies from context", "yellow", "email_writer"),
-            "communication/message-draft-reply": ("message-draft-reply", "Draft message replies from visible context", "yellow", "quick_assistant"),
-            "communication/calendar-today": ("calendar-today", "Summarize today's calendar", "green", "daily_brief"),
-            "communication/reminder-create": ("reminder-create", "Create reminders after confirmation", "yellow", "quick_assistant"),
-            "research/files-search": ("files-search", "Search approved local file index", "green", "deep_research"),
-            "research/files-summarize": ("files-summarize", "Summarize approved local files", "green", "deep_research"),
-            "personal/jarvis-learn-skill": ("jarvis-learn-skill", "Stage reusable skills from workflows", "green", "skill_learning"),
-        }
-        for rel, (name, description, risk, mode) in builtins.items():
-            skill_dir = self.skills_root / rel
-            skill_file = skill_dir / "SKILL.md"
-            if skill_file.exists():
-                continue
-            skill_dir.mkdir(parents=True, exist_ok=True)
-            category = rel.split("/", 1)[0]
-            skill_file.write_text(self._builtin_skill_md(name, description, category, risk, mode), encoding="utf-8")
+    def _ensure_starter_bundle(self) -> None:
         bundle = self.bundles_root / "calibre-launch.yaml"
         if not bundle.exists():
             bundle.write_text(
@@ -304,50 +257,6 @@ class SkillManager:
                 "  Keep answers direct, practical, and investor-ready.\n",
                 encoding="utf-8",
             )
-
-    def _builtin_skill_md(self, name: str, description: str, category: str, risk: str, mode: str) -> str:
-        requires = "true" if risk in {"yellow", "red"} else "false"
-        return f"""---
-name: {name}
-description: {description[:60]}
-version: 1.0.0
-platforms: [macos]
-category: {category}
-risk_level: {risk}
-requires_confirmation: {requires}
-allowed_modes: [{mode}, quick_assistant]
-required_connectors: []
-required_permissions: []
-required_secrets: []
-config: []
----
-
-# {name.replace('-', ' ').title()}
-
-## When to Use
-Use this when the user's request matches: {description.lower()}.
-
-## Inputs Needed
-Current Mac context, selected text, or a clear user request depending on the workflow.
-
-## Procedure
-1. Confirm the user's goal and available context.
-2. Use local deterministic handling when possible.
-3. Escalate to the model only when the workflow needs language understanding or summarization.
-4. Return structured actions for the Swift app to enforce.
-
-## Safety and Confirmation
-Risk level is `{risk}`. Yellow and red actions require confirmation. Red actions require explicit confirmation.
-
-## Pitfalls
-Do not invent context, send messages, delete data, run shell commands, or claim an action succeeded without app results.
-
-## Verification
-Check the structured response, action payload, and trace metadata.
-
-## Response Style
-Be short, natural, and clear about whether the user still needs to review or confirm.
-"""
 
     def _input_summary(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         return {

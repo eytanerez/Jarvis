@@ -5,6 +5,23 @@ from typing import Any, Dict, Optional
 
 from .situation import Situation
 
+_CLOUD_PROVIDERS = {"openai", "anthropic", "gemini"}
+
+
+def provider_model_route(provider: Optional[str], task_type: str, fallback: str) -> str:
+    """Build a provider-accurate route label such as ``openai_smart``.
+
+    The router only classifies *task type and latency*; which provider actually
+    runs is decided later by ProviderManager's enabled chain. So the telemetry
+    label has to be resolved from the provider that truly answered, otherwise a
+    chain led by OpenAI would still report ``gemini_smart``. Local / non-cloud
+    routes (e.g. ``local_skill``) keep the router's own label.
+    """
+    if provider in _CLOUD_PROVIDERS:
+        tier = "smart" if task_type in {"smart", "reasoning"} else "fast"
+        return f"{provider}_{tier}"
+    return fallback
+
 
 @dataclass
 class ModelRoute:
@@ -14,9 +31,13 @@ class ModelRoute:
     latency_target_ms: int = 1000
     privacy_level: str = "balanced"
 
-    def to_metadata(self) -> Dict[str, Any]:
+    def resolved_route(self, provider: Optional[str] = None) -> str:
+        """Telemetry label corrected to the provider that actually ran."""
+        return provider_model_route(provider, self.task_type, self.model_route)
+
+    def to_metadata(self, provider: Optional[str] = None) -> Dict[str, Any]:
         return {
-            "modelRoute": self.model_route,
+            "modelRoute": self.resolved_route(provider),
             "taskType": self.task_type,
             "why": self.why,
             "latencyTargetMs": self.latency_target_ms,

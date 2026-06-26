@@ -19,6 +19,10 @@ class SkillMetadata:
     required_permissions: List[str] = field(default_factory=list)
     required_secrets: List[str] = field(default_factory=list)
     config: List[Dict[str, Any]] = field(default_factory=list)
+    source: str = "brain_service"
+    executor: str = ""
+    data_access: str = "local_only"
+    aliases: List[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SkillMetadata":
@@ -35,6 +39,10 @@ class SkillMetadata:
             required_permissions=_as_list(data.get("required_permissions") or data.get("requiredPermissions") or []),
             required_secrets=_as_list(data.get("required_secrets") or data.get("requiredSecrets") or []),
             config=list(data.get("config") or []),
+            source=str(data.get("source") or "brain_service"),
+            executor=str(data.get("executor") or ""),
+            data_access=str(data.get("data_access") or data.get("dataAccess") or "local_only"),
+            aliases=_as_list(data.get("aliases") or []),
         )
 
     def to_index(self) -> Dict[str, Any]:
@@ -45,6 +53,8 @@ class SkillMetadata:
             "riskLevel": self.risk_level,
             "allowedModes": list(self.allowed_modes),
             "requiresConfirmation": self.requires_confirmation,
+            "source": self.source,
+            "capabilityId": f"{self.category}.{self.name}",
         }
 
     def to_dict(self) -> Dict[str, Any]:
@@ -57,6 +67,9 @@ class SkillMetadata:
                 "requiredPermissions": list(self.required_permissions),
                 "requiredSecrets": list(self.required_secrets),
                 "config": list(self.config),
+                "executor": self.executor,
+                "dataAccess": self.data_access,
+                "aliases": list(self.aliases),
             }
         )
         return data

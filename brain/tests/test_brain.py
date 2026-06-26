@@ -1058,5 +1058,177 @@ class BrainTests(unittest.TestCase):
             os.environ.pop("JARVIS_BRAIN_ALLOW_INSECURE", None)
 
 
+    def test_model_route_reflects_actual_provider(self):
+        # The router classifies task type; the label must follow the provider
+        # that actually answered, not always claim Gemini.
+        service = ChatService()
+
+        async def complete(messages, task_type="fast"):
+            service.providers._last_metadata = {
+                "route": "cloud_llm",
+                "provider": "openai",
+                "model": "gpt-x",
+                "warnings": [],
+            }
+            return "answer"
+
+        service.providers.complete = complete
+        response = asyncio.run(service.chat("compare these two options", None, {}))
+        self.assertEqual(response["metadata"]["modelRoute"], "openai_smart")
+        self.assertEqual(response["metadata"]["trace"]["modelRoute"], "openai_smart")
+        self.assertEqual(response["metadata"]["taskType"], "smart")
+
+    def test_provider_model_route_helper_falls_back_for_local_routes(self):
+        from app.core.model_router import provider_model_route
+
+        self.assertEqual(provider_model_route("gemini", "fast", "gemini_fast"), "gemini_fast")
+        self.assertEqual(provider_model_route("anthropic", "reasoning", "gemini_smart"), "anthropic_smart")
+        self.assertEqual(provider_model_route(None, "fast", "local_skill"), "local_skill")
+
+    def test_model_catalog_drives_provider_models_and_is_overridable(self):
+        from app.core.model_catalog import ModelCatalog
+
+        catalog = ModelCatalog()
+        self.assertIn("gpt-5-nano", catalog.stale_models("openai"))
+        self.assertEqual(catalog.stale_replacement("openai"), "gpt-5-mini")
+        self.assertEqual(catalog.default("anthropic", "smart"), "claude-sonnet-4-6")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            path.write_text(json.dumps({"openai": {"fallbacks": ["custom-a"]}}))
+            os.environ["JARVIS_MODEL_CATALOG_PATH"] = str(path)
+            try:
+                override = ModelCatalog()
+                # External file overrides only the keys it sets; bundled rest stays.
+                self.assertEqual(override.fallbacks("openai"), ["custom-a"])
+                self.assertEqual(override.stale_replacement("openai"), "gpt-5-mini")
+                path.write_text(json.dumps({"openai": {"fallbacks": ["edited"]}}))
+                override.reload()
+                self.assertEqual(override.fallbacks("openai"), ["edited"])
+            finally:
+                os.environ.pop("JARVIS_MODEL_CATALOG_PATH", None)
+
+    def test_openai_input_preserves_role_structure(self):
+        manager = ProviderManager()
+        messages = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "U1"},
+            {"role": "assistant", "content": "A1"},
+            {"role": "user", "content": "U2"},
+        ]
+        instructions, input_messages = manager._openai_input(messages)
+        self.assertEqual(instructions, "S")
+        self.assertEqual(
+            input_messages,
+            [
+                {"role": "user", "content": "U1"},
+                {"role": "assistant", "content": "A1"},
+                {"role": "user", "content": "U2"},
+            ],
+        )
+
+    def test_gemini_request_uses_system_instruction_and_roles(self):
+        os.environ["GEMINI_API_KEY"] = "gemini-secret"
+        manager = ProviderManager()
+        captured = {}
+
+        class FakeResp:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, params=None, json=None):
+                captured["body"] = json
+                return FakeResp()
+
+        class FakeHttpx:
+            AsyncClient = FakeClient
+
+        messages = [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "yo"},
+            {"role": "user", "content": "again"},
+        ]
+        asyncio.run(manager._gemini_once(FakeHttpx, messages, "gemini-x"))
+        body = captured["body"]
+        self.assertEqual(body["system_instruction"], {"parts": [{"text": "SYS"}]})
+        self.assertEqual(
+            [(c["role"], c["parts"][0]["text"]) for c in body["contents"]],
+            [("user", "hi"), ("model", "yo"), ("user", "again")],
+        )
+
+    def test_web_search_respects_mode(self):
+        search = WebSearch()
+        os.environ["JARVIS_WEB_SEARCH_MODE"] = "disabled"
+        self.assertEqual(search.search("ipad"), [])
+        os.environ["JARVIS_WEB_SEARCH_MODE"] = "demo"
+        self.assertEqual(len(search.search("ipad")), 5)
+        os.environ["JARVIS_WEB_SEARCH_MODE"] = "real_provider"
+        for key in ["JARVIS_WEB_SEARCH_API_URL", "JARVIS_WEB_SEARCH_API_KEY"]:
+            os.environ.pop(key, None)
+        self.assertFalse(search.real_provider_configured)
+        self.assertEqual(search.search("ipad"), [])
+
+    def test_web_search_real_provider_normalizes_results(self):
+        search = WebSearch()
+        os.environ["JARVIS_WEB_SEARCH_MODE"] = "real_provider"
+        os.environ["JARVIS_WEB_SEARCH_API_URL"] = "https://example.test/search"
+        os.environ["JARVIS_WEB_SEARCH_API_KEY"] = "secret"
+        try:
+            self.assertTrue(search.real_provider_configured)
+            data = {"web": {"results": [
+                {"title": "First", "url": "https://a.test", "description": "desc a"},
+                {"name": "Second", "link": "https://b.test", "snippet": "desc b"},
+            ]}}
+            results = search._normalize(data, "q", 5)
+            self.assertEqual([r["name"] for r in results], ["First", "Second"])
+            self.assertEqual([r["url"] for r in results], ["https://a.test", "https://b.test"])
+            self.assertEqual(results[0]["reason"], "desc a")
+            self.assertEqual(results[0]["metadata"]["source"], "real_provider")
+        finally:
+            for key in ["JARVIS_WEB_SEARCH_API_URL", "JARVIS_WEB_SEARCH_API_KEY"]:
+                os.environ.pop(key, None)
+
+    def test_dangerous_script_patterns_are_case_insensitive(self):
+        from app.core.skills.security import SkillSecurity
+
+        security = SkillSecurity()
+        self.assertTrue(security.find_script_warnings(["RM -RF /tmp/x"]))
+        self.assertTrue(security.find_script_warnings(["SUDO reboot"]))
+        self.assertEqual(security.find_script_warnings(["echo safe"]), [])
+
+    def test_runtime_models_endpoint_exposes_catalog(self):
+        from fastapi.testclient import TestClient
+        from app import main
+
+        os.environ.pop("JARVIS_BRAIN_TOKEN", None)
+        os.environ["JARVIS_BRAIN_ALLOW_INSECURE"] = "1"
+        try:
+            client = TestClient(main.app)
+            response = client.get("/runtime/models")
+            self.assertEqual(response.status_code, 200)
+            catalog = response.json()["catalog"]
+            self.assertIn("openai", catalog)
+            self.assertIn("fallbacks", catalog["openai"])
+            reload_response = client.post("/runtime/models/reload")
+            self.assertEqual(reload_response.status_code, 200)
+            self.assertIn("openai", reload_response.json()["catalog"])
+        finally:
+            os.environ.pop("JARVIS_BRAIN_ALLOW_INSECURE", None)
+
+
 if __name__ == "__main__":
     unittest.main()

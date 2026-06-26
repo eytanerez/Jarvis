@@ -14,6 +14,10 @@ class RuntimeSecrets:
     openaiApiKey: Optional[str] = None
     anthropicApiKey: Optional[str] = None
     providerOrder: Tuple[str, ...] = PROVIDERS
+    spotifyClientId: Optional[str] = None
+    spotifyClientSecret: Optional[str] = None
+    spotifyRedirectUri: Optional[str] = None
+    spotifyRefreshToken: Optional[str] = None
 
     @classmethod
     def from_environment(cls, environ: Optional[Mapping[str, str]] = None) -> "RuntimeSecrets":
@@ -32,6 +36,10 @@ class RuntimeSecrets:
             openaiApiKey=cls._first_value(env, "JARVIS_OPENAI_API_KEY", "OPENAI_API_KEY"),
             anthropicApiKey=cls._first_value(env, "JARVIS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
             providerOrder=provider_order,
+            spotifyClientId=cls._first_value(env, "JARVIS_SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_ID"),
+            spotifyClientSecret=cls._first_value(env, "JARVIS_SPOTIFY_CLIENT_SECRET", "SPOTIFY_CLIENT_SECRET"),
+            spotifyRedirectUri=cls._first_value(env, "JARVIS_SPOTIFY_REDIRECT_URI", "SPOTIFY_REDIRECT_URI"),
+            spotifyRefreshToken=cls._first_value(env, "JARVIS_SPOTIFY_REFRESH_TOKEN", "SPOTIFY_REFRESH_TOKEN"),
         )
 
     def key_for(self, provider: str) -> Optional[str]:

@@ -1,0 +1,21 @@
+{
+  "_comment": "Provider model catalog. This is data, not code: updating a model name, fallback chain, or stale-model remap should be an edit here (or in the file pointed at by JARVIS_MODEL_CATALOG_PATH) followed by POST /runtime/models/reload — never a code change. Per-request model still respects the JARVIS_<PROVIDER>_*_MODEL env vars; this file supplies the defaults and the lists those env vars cannot express.",
+  "openai": {
+    "defaults": { "fast": "gpt-4.1-mini", "smart": "gpt-5-mini" },
+    "fallbacks": ["gpt-4.1-mini", "gpt-5-mini", "gpt-4o-mini"],
+    "staleModels": ["", "gpt-5.5", "gpt-5.4-mini", "gpt-5-nano"],
+    "staleReplacement": "gpt-5-mini"
+  },
+  "gemini": {
+    "defaults": { "fast": "gemini-3.1-flash-lite", "smart": "gemini-3.5-flash" },
+    "fallbacks": ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"],
+    "aliases": {
+      "gemini-3.1-flash-light": "gemini-3.1-flash-lite",
+      "gemini-2.5-flash-light": "gemini-2.5-flash-lite",
+      "gemini-2.0-flash-light": "gemini-2.0-flash-lite"
+    }
+  },
+  "anthropic": {
+    "defaults": { "fast": "claude-sonnet-4-6", "smart": "claude-sonnet-4-6" }
+  }
+}

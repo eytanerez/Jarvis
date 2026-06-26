@@ -18,6 +18,23 @@ async def runtime_status(container: ServiceContainer = Depends(get_container)) -
     }
 
 
+@router.get("/models")
+async def runtime_models(container: ServiceContainer = Depends(get_container)) -> dict:
+    """The provider model catalog (defaults, fallbacks, stale-model remaps).
+
+    Backed by app/core/model_catalog.json so updating a model name is a config
+    edit, not a code change. The Swift app can read this to show the live
+    catalog and POST /runtime/models/reload to pick up edits without a restart.
+    """
+    return {"catalog": container.provider_manager.catalog.as_dict()}
+
+
+@router.post("/models/reload")
+async def runtime_models_reload(container: ServiceContainer = Depends(get_container)) -> dict:
+    """Re-read the model catalog from disk (bundled + JARVIS_MODEL_CATALOG_PATH)."""
+    return {"catalog": container.provider_manager.catalog.reload()}
+
+
 @router.get("/dashboard")
 async def runtime_dashboard(container: ServiceContainer = Depends(get_container)) -> dict:
     """Aggregated, non-blocking status for the performance dashboard (Priority 7).

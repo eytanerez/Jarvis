@@ -12,7 +12,21 @@ router = APIRouter(dependencies=[Depends(require_auth)])
 
 @router.get("")
 async def list_skills(container: ServiceContainer = Depends(get_container)) -> dict:
-    return {"skills": container.skill_manager.list(), "config": container.skill_manager.config()}
+    manager = container.skill_manager
+    return {
+        "skills": manager.list(),
+        "config": manager.config(),
+        "warnings": manager.duplicate_warnings(),
+    }
+
+
+@router.get("/self-test")
+async def skills_self_test(container: ServiceContainer = Depends(get_container)) -> dict:
+    from ..core.catalog import run_self_test
+
+    result = run_self_test()
+    result["duplicateWarnings"] = container.skill_manager.duplicate_warnings()
+    return result
 
 
 @router.get("/bundles")

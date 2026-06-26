@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 
 from .core.service_container import ServiceContainer
 from .routes import (
+    atoll,
     capabilities,
     chat,
     connectors,
@@ -18,6 +19,7 @@ from .routes import (
     scheduled_agents,
     settings,
     skills,
+    spotify,
     tts,
     web,
 )
@@ -58,3 +60,5 @@ app.include_router(connectors.router, prefix="/connectors", tags=["connectors"])
 app.include_router(skills.router, prefix="/skills", tags=["skills"])
 app.include_router(dictation.router, prefix="/dictation", tags=["dictation"])
 app.include_router(capabilities.router, prefix="/capabilities", tags=["capabilities"])
+app.include_router(spotify.router, prefix="/spotify", tags=["spotify"])
+app.include_router(atoll.router, prefix="/atoll", tags=["atoll"])
