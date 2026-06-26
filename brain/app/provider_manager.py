@@ -24,6 +24,18 @@ class ProviderManager:
     def enabled_chain(self) -> List[str]:
         return self.secrets.enabled_chain()
 
+    def with_system_context(self, messages: List[Dict[str, str]], system_context: Optional[str]) -> List[Dict[str, str]]:
+        context = (system_context or "").strip()
+        if not context:
+            return list(messages)
+        copied = [dict(message) for message in messages]
+        for message in copied:
+            if message.get("role") == "system":
+                if context not in message.get("content", ""):
+                    message["content"] = f"{context}\n\n{message.get('content', '')}".strip()
+                return copied
+        return [{"role": "system", "content": context}, *copied]
+
     async def complete(self, messages: List[Dict[str, str]], task_type: str = "fast") -> str:
         self._last_model_used = None
         self._last_metadata = {}

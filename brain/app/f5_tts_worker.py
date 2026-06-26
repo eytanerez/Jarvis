@@ -7,12 +7,16 @@ import io
 import json
 import os
 import sys
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 
 _MODEL: Any = None
 _DEVICE: Optional[str] = None
+
+DEFAULT_MODEL = "F5TTS_v1_Base"
+DEFAULT_REFERENCE_TEXT = "Some call me nature, others call me mother nature."
 
 
 def main() -> int:
@@ -27,11 +31,19 @@ def main() -> int:
 def status() -> int:
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            patch_perth_watermarker()
-            import chatterbox.tts  # noqa: F401
+            from f5_tts.api import F5TTS  # noqa: F401
             import soundfile  # noqa: F401
 
-        print(json.dumps({"importable": True, "device": preferred_device()}), flush=True)
+        print(
+            json.dumps(
+                {
+                    "importable": True,
+                    "device": preferred_device(),
+                    "model": model_name(),
+                }
+            ),
+            flush=True,
+        )
         return 0
     except Exception as exc:
         print(json.dumps({"importable": False, "device": None, "error": str(exc)}), flush=True)
@@ -50,6 +62,7 @@ def serve() -> int:
                     {
                         "ok": True,
                         "device": preferred_device(),
+                        "model": model_name(),
                         "wav": base64.b64encode(wav).decode("ascii"),
                     },
                     separators=(",", ":"),
@@ -66,41 +79,58 @@ def synthesize(request: Dict[str, Any]) -> bytes:
     if not text:
         raise ValueError("No text was provided for speech synthesis.")
 
-    exaggeration = _clamp(request.get("exaggeration", 0.45), 0.15, 1.20)
-    cfg_weight = _clamp(request.get("cfgWeight", 0.50), 0.10, 1.20)
-    kwargs: Dict[str, Any] = {"exaggeration": exaggeration, "cfg_weight": cfg_weight}
+    reference_audio = reference_audio_path(str(request.get("referenceAudioPath") or "").strip())
+    reference_text = str(request.get("referenceText") or "").strip()
+    if not reference_text and not str(request.get("referenceAudioPath") or "").strip():
+        reference_text = DEFAULT_REFERENCE_TEXT
 
-    reference = str(request.get("referenceAudioPath") or "").strip()
-    if reference:
-        path = Path(reference).expanduser()
-        if not path.exists():
-            raise ValueError(f"Chatterbox reference audio was not found: {path}")
-        kwargs["audio_prompt_path"] = str(path)
+    speed = _clamp(request.get("speed", 1.0), 0.5, 1.8)
+    cfg_strength = _clamp(request.get("cfgStrength", 2.0), 0.5, 5.0)
+    nfe_step = int(_clamp(request.get("nfeStep", 32), 8, 64))
 
     with contextlib.redirect_stdout(sys.stderr):
         model = model_client()
-        samples = model.generate(text, **kwargs)
-    samples = as_numpy_audio(samples)
-    sample_rate = int(getattr(model, "sr", 24000))
-    return wav_bytes(samples, sample_rate)
+        wav, sample_rate, _ = model.infer(
+            ref_file=reference_audio,
+            ref_text=reference_text,
+            gen_text=text,
+            show_info=lambda *_args, **_kwargs: None,
+            progress=None,
+            cfg_strength=cfg_strength,
+            nfe_step=nfe_step,
+            speed=speed,
+            seed=None,
+        )
+    if wav is None:
+        raise RuntimeError("F5-TTS generated no audio.")
+    return wav_bytes(wav, int(sample_rate))
 
 
 def model_client() -> Any:
     global _MODEL
     if _MODEL is None:
         with contextlib.redirect_stdout(sys.stderr):
-            patch_perth_watermarker()
-            from chatterbox.tts import ChatterboxTTS
+            from f5_tts.api import F5TTS
 
-            _MODEL = ChatterboxTTS.from_pretrained(device=preferred_device())
+            _MODEL = F5TTS(
+                model=model_name(),
+                device=preferred_device(),
+                hf_cache_dir=os.environ.get("JARVIS_F5_TTS_HF_CACHE") or None,
+            )
     return _MODEL
 
 
-def patch_perth_watermarker() -> None:
-    import perth
+def model_name() -> str:
+    return os.environ.get("JARVIS_F5_TTS_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
-    if getattr(perth, "PerthImplicitWatermarker", None) is None:
-        perth.PerthImplicitWatermarker = perth.DummyWatermarker
+
+def reference_audio_path(reference: str) -> str:
+    if reference:
+        path = Path(reference).expanduser()
+        if not path.exists():
+            raise ValueError(f"F5-TTS reference audio was not found: {path}")
+        return str(path)
+    return str(files("f5_tts").joinpath("infer/examples/basic/basic_ref_en.wav"))
 
 
 def preferred_device() -> str:
@@ -108,8 +138,8 @@ def preferred_device() -> str:
     if _DEVICE:
         return _DEVICE
 
-    override = os.environ.get("JARVIS_CHATTERBOX_DEVICE", "").strip().lower()
-    if override in {"cpu", "mps", "cuda"}:
+    override = os.environ.get("JARVIS_F5_TTS_DEVICE", "").strip().lower()
+    if override in {"cpu", "mps", "cuda", "xpu"}:
         _DEVICE = override
         return _DEVICE
 
@@ -118,26 +148,16 @@ def preferred_device() -> str:
         with contextlib.redirect_stdout(sys.stderr):
             import torch
 
-        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-            device = "mps"
-        elif torch.cuda.is_available():
+        if torch.cuda.is_available():
             device = "cuda"
+        elif getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
+            device = "xpu"
+        elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            device = "mps"
     except Exception:
         device = "cpu"
     _DEVICE = device
     return _DEVICE
-
-
-def as_numpy_audio(samples: Any) -> Any:
-    if hasattr(samples, "detach"):
-        samples = samples.detach()
-    if hasattr(samples, "cpu"):
-        samples = samples.cpu()
-    if hasattr(samples, "squeeze"):
-        samples = samples.squeeze()
-    if hasattr(samples, "numpy"):
-        return samples.numpy()
-    return samples
 
 
 def wav_bytes(samples: Any, sample_rate: int) -> bytes:

@@ -74,6 +74,9 @@ public final class BrainProcessManager: @unchecked Sendable {
     }
 
     private func findBrainDirectory() -> URL {
+        if let developmentBrain = developmentBrainDirectory() {
+            return developmentBrain
+        }
         if let resourceURL = Bundle.main.resourceURL?.appendingPathComponent("brain"),
            FileManager.default.fileExists(atPath: resourceURL.path) {
             return resourceURL
@@ -82,14 +85,83 @@ public final class BrainProcessManager: @unchecked Sendable {
     }
 
     private func pythonExecutable(in brainDirectory: URL) -> URL {
-        let venvPython = brainDirectory.appendingPathComponent(".venv/bin/python")
-        if FileManager.default.isExecutableFile(atPath: venvPython.path) {
-            return venvPython
+        for candidate in pythonCandidates(for: brainDirectory) {
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate
+            }
         }
         if FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/python3.12") {
             return URL(fileURLWithPath: "/opt/homebrew/bin/python3.12")
         }
         return URL(fileURLWithPath: "/usr/bin/python3")
+    }
+
+    private func pythonCandidates(for brainDirectory: URL) -> [URL] {
+        var candidates: [URL] = []
+        if let developmentBrain = developmentBrainDirectory() {
+            candidates.append(developmentBrain.appendingPathComponent(".venv/bin/python"))
+            candidates.append(developmentBrain.appendingPathComponent(".venv/bin/python3"))
+        }
+        candidates.append(contentsOf: [
+            brainDirectory.appendingPathComponent(".venv/bin/python"),
+            brainDirectory.appendingPathComponent(".venv/bin/python3")
+        ])
+        for root in developmentRootCandidates() {
+            let sourceBrain = root.appendingPathComponent("brain", isDirectory: true)
+            candidates.append(sourceBrain.appendingPathComponent(".venv/bin/python"))
+            candidates.append(sourceBrain.appendingPathComponent(".venv/bin/python3"))
+        }
+        return uniqueURLs(candidates)
+    }
+
+    private func developmentBrainDirectory() -> URL? {
+        for root in developmentRootCandidates() {
+            let brain = root.appendingPathComponent("brain", isDirectory: true)
+            let launchScript = brain.appendingPathComponent("run_brain.py")
+            let venvPython = brain.appendingPathComponent(".venv/bin/python")
+            if FileManager.default.fileExists(atPath: launchScript.path),
+               FileManager.default.isExecutableFile(atPath: venvPython.path) {
+                return brain
+            }
+        }
+        return nil
+    }
+
+    private func developmentRootCandidates() -> [URL] {
+        var roots: [URL] = []
+        let startingPoints = [
+            Bundle.main.bundleURL,
+            Bundle.main.resourceURL,
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        ].compactMap { $0 }
+
+        for start in startingPoints {
+            var current = start.standardizedFileURL
+            for _ in 0..<12 {
+                let package = current.appendingPathComponent("Package.swift")
+                let brain = current.appendingPathComponent("brain/run_brain.py")
+                if FileManager.default.fileExists(atPath: package.path),
+                   FileManager.default.fileExists(atPath: brain.path) {
+                    roots.append(current)
+                }
+                let parent = current.deletingLastPathComponent()
+                if parent.path == current.path { break }
+                current = parent
+            }
+        }
+        return uniqueURLs(roots)
+    }
+
+    private func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        var unique: [URL] = []
+        for url in urls {
+            let path = url.standardizedFileURL.path
+            guard !seen.contains(path) else { continue }
+            seen.insert(path)
+            unique.append(url.standardizedFileURL)
+        }
+        return unique
     }
 
     private func environment() -> [String: String] {
@@ -98,6 +170,10 @@ public final class BrainProcessManager: @unchecked Sendable {
         env["JARVIS_BRAIN_TOKEN"] = token
         env["JARVIS_BRAIN_PORT"] = String(port)
         env["JARVIS_BRAIN_HOME"] = applicationSupportPath()
+        if env["JARVIS_F5_TTS_PYTHON"] == nil,
+           let f5Python = f5TTSPythonCandidate() {
+            env["JARVIS_F5_TTS_PYTHON"] = f5Python.path
+        }
         if let settings {
             env["JARVIS_PROVIDER_ORDER"] = settings.providerFallbackOrder.map(\.rawValue).joined(separator: ",")
             env["JARVIS_CONTEXT_PRIVACY_LEVEL"] = String(settings.context.privacyLevel.rawValue)
@@ -142,6 +218,16 @@ public final class BrainProcessManager: @unchecked Sendable {
             env["JARVIS_GEMINI_API_KEY"] = key
         }
         return env
+    }
+
+    private func f5TTSPythonCandidate() -> URL? {
+        for root in developmentRootCandidates() {
+            let python = root.appendingPathComponent("brain/.venv-f5-tts/bin/python")
+            if FileManager.default.isExecutableFile(atPath: python.path) {
+                return python
+            }
+        }
+        return nil
     }
 
     private func clearProviderSecrets(in env: inout [String: String]) {

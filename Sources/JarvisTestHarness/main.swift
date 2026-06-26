@@ -183,7 +183,129 @@ func runSettingsMigrationTests() throws {
     try expect(settings.voice.ttsEngine == .kokoro, "Old voice settings should default to Kokoro")
     try expect(settings.voice.kokoroVoice == "af_heart", "Old voice settings should default Kokoro voice")
     try expect(settings.personality.name == "Jarvis", "Old settings should default personality")
-    try expect(settings.voice.chatterboxExaggeration == 0.45, "Old voice settings should default Chatterbox exaggeration")
+    try expect(settings.voice.f5CfgStrength == 2.0, "Old voice settings should default F5-TTS CFG strength")
+}
+
+func runScheduleContextTests() throws {
+    let event = ScheduleItemContext(
+        id: "event-1",
+        kind: "event",
+        title: "Investor check-in",
+        calendarTitle: "Work",
+        start: Date(timeIntervalSince1970: 1_782_492_000),
+        end: Date(timeIntervalSince1970: 1_782_495_600),
+        participantNames: ["David"]
+    )
+    let reminder = ScheduleItemContext(
+        id: "reminder-1",
+        kind: "reminder",
+        title: "Send deck",
+        start: Date(timeIntervalSince1970: 1_782_499_200),
+        completed: false
+    )
+    let schedule = ScheduleContext(
+        generatedAt: Date(timeIntervalSince1970: 1_782_488_400),
+        calendarAuthorization: "fullAccess",
+        reminderAuthorization: "fullAccess",
+        events: [event],
+        reminders: [reminder]
+    )
+    try expect(schedule.hasAnyEntries, "Schedule context should report entries")
+
+    let encoded = try JSONEncoder().encode(schedule)
+    let decoded = try JSONDecoder().decode(ScheduleContext.self, from: encoded)
+    try expect(decoded.events.first?.title == "Investor check-in", "Schedule event did not round-trip")
+    try expect(decoded.reminders.first?.completed == false, "Schedule reminder completion did not round-trip")
+
+    let previewJSON = """
+    {
+      "agent": {
+        "id": "daily_brief",
+        "name": "Daily Brief",
+        "description": "Short opt-in summary from enabled local sources.",
+        "type": "scheduled",
+        "enabled": false,
+        "time": "08:30",
+        "timezone": "America/New_York",
+        "sources": {"calendar": true, "reminders": true},
+        "requiresOptIn": true,
+        "lastRunAt": null,
+        "nextRunAt": "2026-06-27T08:30:00-04:00",
+        "updatedAt": "2026-06-26T12:00:00-04:00"
+      },
+      "answer": "Daily brief preview",
+      "speak": "Daily brief preview ready.",
+      "sourcesUsed": ["calendar", "reminders"],
+      "metadata": {"route": "scheduled_agent", "mode": "daily_brief", "contextAvailable": true}
+    }
+    """
+    let preview = try JSONDecoder().decode(ScheduledAgentPreviewReport.self, from: Data(previewJSON.utf8))
+    try expect(preview.agent.requiresOptIn, "Daily brief should remain opt-in")
+    try expect(preview.sourcesUsed == ["calendar", "reminders"], "Scheduled preview sources did not decode")
+    try expect(preview.metadata?.route == "scheduled_agent", "Scheduled preview metadata did not decode")
+
+    let dueAgentJSON = """
+    {
+      "id": "daily_brief",
+      "name": "Daily Brief",
+      "description": "Short opt-in summary from enabled local sources.",
+      "type": "scheduled",
+      "enabled": true,
+      "time": "08:30",
+      "timezone": "America/New_York",
+      "sources": {"calendar": true, "reminders": true},
+      "requiresOptIn": true,
+      "lastRunAt": null,
+      "nextRunAt": "2026-06-27T08:30:00-04:00",
+      "updatedAt": "2026-06-26T12:00:00-04:00"
+    }
+    """
+    var dueAgent = try JSONDecoder().decode(ScheduledAgent.self, from: Data(dueAgentJSON.utf8))
+    let isoFormatter = ISO8601DateFormatter()
+    guard let afterScheduledTime = isoFormatter.date(from: "2026-06-26T09:00:00-04:00"),
+          let beforeScheduledTime = isoFormatter.date(from: "2026-06-26T08:00:00-04:00") else {
+        throw HarnessError.failure("Failed to build scheduled agent test dates")
+    }
+    try expect(dueAgent.isDue(now: afterScheduledTime), "Enabled daily brief should be due after its scheduled time")
+    try expect(!dueAgent.isDue(now: beforeScheduledTime), "Daily brief should not be due before its scheduled time")
+
+    dueAgent.lastRunAt = "2026-06-26T08:31:00-04:00"
+    try expect(dueAgent.hasRun(on: afterScheduledTime), "Daily brief should detect same-day run")
+    try expect(!dueAgent.isDue(now: afterScheduledTime), "Daily brief should not repeat after running that day")
+
+    dueAgent.enabled = false
+    dueAgent.lastRunAt = nil
+    try expect(!dueAgent.isDue(now: afterScheduledTime), "Disabled daily brief should not be due")
+}
+
+func runSkillRunHistoryTests() throws {
+    let json = """
+    {
+      "runs": [
+        {
+          "id": "run-1",
+          "timestamp": "2026-06-26T12:00:00Z",
+          "kind": "local_skill",
+          "name": "time.now",
+          "route": "local_skill",
+          "status": "completed",
+          "mode": "quick_assistant",
+          "intent": "quick_answer",
+          "riskLevel": "green",
+          "requiresConfirmation": false,
+          "loadedSkills": [],
+          "missingSkills": [],
+          "warnings": [],
+          "inputSummary": {"contextAvailable": false, "actionCount": 0},
+          "metadata": {"modelRoute": "local_skill", "privacyLevel": "local"}
+        }
+      ]
+    }
+    """
+    let report = try JSONDecoder().decode(SkillRunHistoryReport.self, from: Data(json.utf8))
+    try expect(report.runs.first?.name == "time.now", "Skill run history name did not decode")
+    try expect(report.runs.first?.kind == "local_skill", "Skill run history kind did not decode")
+    try expect(report.runs.first?.requiresConfirmation == false, "Skill run history confirmation flag did not decode")
 }
 
 func runResponseComposerTests() throws {
@@ -204,6 +326,8 @@ do {
     try runCodableTests()
     try runKeychainTests()
     try runSettingsMigrationTests()
+    try runScheduleContextTests()
+    try runSkillRunHistoryTests()
     try runResponseComposerTests()
     print("JarvisTestHarness passed")
 } catch {

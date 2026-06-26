@@ -16,15 +16,18 @@ final class JarvisScheduleSnapshotProvider {
     private let calendarManager = CalendarManager.shared
     private var lastRefresh: Date = .distantPast
     private let refreshInterval: TimeInterval = 60
+    private var lastSnapshot = ScheduleContext()
 
     private init() {}
 
     func start() {
-        refreshIfAuthorized(force: true)
+        Task { @MainActor in
+            _ = await snapshot(forceRefresh: true)
+        }
     }
 
-    func snapshot() -> ScheduleContext {
-        refreshIfAuthorized(force: false)
+    func snapshot(forceRefresh: Bool = false) async -> ScheduleContext {
+        await refreshIfAuthorized(force: forceRefresh)
 
         let events = calendarManager.events
             .filter { !$0.type.isReminder }
@@ -38,34 +41,38 @@ final class JarvisScheduleSnapshotProvider {
             .prefix(12)
             .map(ScheduleItemContext.init(event:))
 
-        return ScheduleContext(
+        let snapshot = ScheduleContext(
             generatedAt: Date(),
             calendarAuthorization: Self.authorizationDescription(calendarManager.calendarAuthorizationStatus),
             reminderAuthorization: Self.authorizationDescription(calendarManager.reminderAuthorizationStatus),
             events: Array(events),
             reminders: Array(reminders)
         )
+        lastSnapshot = snapshot
+        return snapshot
     }
 
-    private func refreshIfAuthorized(force: Bool) {
+    func cachedSnapshot() -> ScheduleContext {
+        lastSnapshot
+    }
+
+    private func refreshIfAuthorized(force: Bool) async {
         let now = Date()
         guard force || now.timeIntervalSince(lastRefresh) > refreshInterval else { return }
         lastRefresh = now
 
-        Task { @MainActor in
-            let calendarStatus = EKEventStore.authorizationStatus(for: .event)
-            let reminderStatus = EKEventStore.authorizationStatus(for: .reminder)
-            calendarManager.calendarAuthorizationStatus = calendarStatus
-            calendarManager.reminderAuthorizationStatus = reminderStatus
+        let calendarStatus = EKEventStore.authorizationStatus(for: .event)
+        let reminderStatus = EKEventStore.authorizationStatus(for: .reminder)
+        calendarManager.calendarAuthorizationStatus = calendarStatus
+        calendarManager.reminderAuthorizationStatus = reminderStatus
 
-            guard Self.isAuthorized(calendarStatus) || Self.isAuthorized(reminderStatus) else {
-                await calendarManager.reloadCalendarAndReminderLists()
-                return
-            }
-
+        guard Self.isAuthorized(calendarStatus) || Self.isAuthorized(reminderStatus) else {
             await calendarManager.reloadCalendarAndReminderLists()
-            await calendarManager.updateCurrentDate(Date())
+            return
         }
+
+        await calendarManager.reloadCalendarAndReminderLists()
+        await calendarManager.updateCurrentDate(Date())
     }
 
     private static func isAuthorized(_ status: EKAuthorizationStatus) -> Bool {

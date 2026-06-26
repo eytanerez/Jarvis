@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import JarvisContext
 import JarvisCore
+import JarvisDictation
 import JarvisMac
 import SwiftUI
 
@@ -27,11 +28,30 @@ public final class JarvisAppModel: ObservableObject {
     @Published public var fileIndexStatus: FileIndexStatusReport?
     @Published public var performanceReport: PerformanceModeReport?
     @Published public var performanceDashboard: DashboardReport?
+    @Published public var assistantModes: [AssistantModeReport] = []
+    @Published public var defaultAssistantMode = "quick_assistant"
+    @Published public var capabilityReport: CapabilityReport?
+    @Published public var installedSkills: [SkillSummary] = []
+    @Published public var pendingSkillChanges: [PendingSkillChange] = []
+    @Published public var selectedSkillDiff: PendingSkillDiff?
+    @Published public var selectedSkillDetail: SkillDetail?
+    @Published public var skillBundles: [SkillBundle] = []
+    @Published public var skillRunHistory: [SkillRunRecord] = []
+    @Published public var skillsConfig: [String: JSONValue]?
+    @Published public var editablePrompts: [JarvisPrompt] = []
+    @Published public var scheduledAgents: [ScheduledAgent] = []
+    @Published public var scheduledAgentPreview: ScheduledAgentPreviewReport?
+    @Published public var lastScheduledAgentRun: ScheduledAgentPreviewReport?
+    @Published public var lastScheduledAgentRunAt: Date?
+    @Published public var scheduledAgentStatus = "No active scheduled agents"
+    @Published public var latestScheduleContext: ScheduleContext?
+    @Published public var dictationStatus: DictationStatus = .idle
+    @Published public var dictationBackendStatus: DictationStatusReport?
     @Published public var modelBadgeText = "Local"
     @Published public var activeTurn: AssistantTurn?
     @Published public var turnWarnings: [String] = []
     @Published public var ttsDebugLog: [String] = []
-    public var scheduleContextProvider: (@MainActor () -> ScheduleContext?)?
+    public var scheduleContextProvider: (@MainActor () async -> ScheduleContext?)?
     public var onLocalActionWillExecute: (@MainActor (AssistantAction) -> Void)?
 
     private let settingsStore = SettingsStore()
@@ -47,6 +67,7 @@ public final class JarvisAppModel: ObservableObject {
     private let actionExecutor = ActionExecutor()
     private let contextBuilder = ContextBuilder()
     private let targetCapture = TargetAppCapture()
+    private let dictation = DictationController()
     private let speech = SpeechTranscriberManager()
     private let tts = TTSManager()
     private let hotkey = GlobalHotkeyManager()
@@ -59,6 +80,10 @@ public final class JarvisAppModel: ObservableObject {
     private var pendingFollowUpPrompt: String?
     private var lastFollowUpPrompt = ""
     private var endConversationAfterSpeech = false
+    private var scheduledAgentTask: Task<Void, Never>?
+    private var scheduledAgentRunInProgress = false
+
+    private static let scheduledAgentPollIntervalNanoseconds: UInt64 = 60 * 1_000_000_000
 
     private init() {
         let loadedSettings = settingsStore.load()
@@ -84,6 +109,7 @@ public final class JarvisAppModel: ObservableObject {
             panelController = NotchPanelController(model: self)
         }
         configureSpeech()
+        configureDictation()
         configureTTSCallbacks()
         configureFlow()
         refreshKeyPresence()
@@ -102,11 +128,15 @@ public final class JarvisAppModel: ObservableObject {
             }
             statusLine = brainReady ? "Ready when you are" : "Local commands are ready"
             await refreshRuntimeStatus()
+            restartScheduledAgentLoop()
         }
     }
 
     public func shutdown() {
+        scheduledAgentTask?.cancel()
+        scheduledAgentTask = nil
         flow.cancelTimers()
+        dictation.unregister()
         hotkey.unregister()
         brainProcess.stop()
     }
@@ -137,6 +167,8 @@ public final class JarvisAppModel: ObservableObject {
         do {
             try settingsStore.save(settings)
             tts.configure(settings: settings.voice, brainClient: brainClient)
+            configureDictation()
+            applyPromptSettingsToLocalReports()
             statusLine = "Settings saved"
             refreshBrainAfterSettingsChange(message: "Settings saved")
         } catch {
@@ -279,13 +311,358 @@ public final class JarvisAppModel: ObservableObject {
         }
     }
 
+    public func resetLocalPromptsToDefaults() {
+        settings.prompts = PromptSettings()
+        settings.dictation.dictationPrompt = DictationSettings.defaultDictationPrompt
+        settings.dictation.emailPrompt = DictationSettings.defaultEmailPrompt
+        settings.dictation.writingStylePrompt = ""
+        applyPromptSettingsToLocalReports()
+        statusLine = "Prompt drafts reset. Save settings to apply."
+    }
+
+    public func refreshSkills() {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            await refreshSkillsAsync()
+            statusLine = "Skills refreshed"
+        }
+    }
+
+    public func refreshScheduledAgents() {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            _ = await captureScheduleContext()
+            await refreshScheduledAgentsAsync()
+            restartScheduledAgentLoop()
+            statusLine = "Scheduled agents refreshed"
+        }
+    }
+
+    public func refreshScheduleContext() {
+        Task {
+            if await captureScheduleContext() != nil {
+                statusLine = "Schedule context refreshed"
+            } else {
+                statusLine = "No schedule connector is attached."
+            }
+        }
+    }
+
+    public func refreshAssistantModes() {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            await refreshAssistantModesAsync()
+            statusLine = "Assistant modes refreshed"
+        }
+    }
+
+    public func refreshCapabilities() {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            do {
+                capabilityReport = try await brainClient.capabilities()
+                statusLine = "Capabilities refreshed"
+            } catch {
+                statusLine = "Capabilities refresh failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func setScheduledAgentEnabled(_ agent: ScheduledAgent, enabled: Bool) {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            do {
+                let updated = try await brainClient.updateScheduledAgent(id: agent.id, enabled: enabled)
+                replaceScheduledAgent(updated)
+                restartScheduledAgentLoop()
+                statusLine = "\(updated.name) \(updated.enabled ? "enabled" : "disabled")"
+            } catch {
+                statusLine = "Scheduled agent update failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func setScheduledAgentSource(_ agent: ScheduledAgent, source: String, enabled: Bool) {
+        var sources = agent.sources
+        sources[source] = enabled
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            do {
+                let updated = try await brainClient.updateScheduledAgent(id: agent.id, sources: sources)
+                replaceScheduledAgent(updated)
+                restartScheduledAgentLoop()
+                statusLine = "\(updated.name) sources updated"
+            } catch {
+                statusLine = "Scheduled agent source update failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func previewScheduledAgent(_ agent: ScheduledAgent) {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            do {
+                let schedule = await captureScheduleContext()
+                scheduledAgentPreview = try await brainClient.previewScheduledAgent(
+                    id: agent.id,
+                    schedule: schedule
+                )
+                statusLine = "Previewed \(agent.name)"
+            } catch {
+                statusLine = "Scheduled agent preview failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func inspectSkill(_ skill: SkillSummary) {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            do {
+                selectedSkillDetail = try await brainClient.skill(name: skill.name)
+                statusLine = "Loaded \(skill.name)"
+            } catch {
+                statusLine = "Skill load failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func showSkillDiff(_ change: PendingSkillChange) {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            do {
+                selectedSkillDiff = try await brainClient.pendingSkillDiff(id: change.id)
+                statusLine = "Loaded diff for \(change.skillName)"
+            } catch {
+                statusLine = "Skill diff failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func approveSkillChange(_ change: PendingSkillChange) {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            do {
+                let approved = try await brainClient.approveSkillChange(id: change.id)
+                selectedSkillDiff = nil
+                await refreshSkillsAsync()
+                statusLine = "Approved \(approved.skillName)"
+            } catch {
+                statusLine = "Skill approval failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func rejectSkillChange(_ change: PendingSkillChange) {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            do {
+                let rejected = try await brainClient.rejectSkillChange(id: change.id)
+                selectedSkillDiff = nil
+                await refreshSkillsAsync()
+                statusLine = "Rejected \(rejected.skillName)"
+            } catch {
+                statusLine = "Skill rejection failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func learnSkill(source: String, name: String?) {
+        let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSource.isEmpty else {
+            statusLine = "Describe the workflow before staging a skill."
+            return
+        }
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            do {
+                let report = try await brainClient.learnSkill(
+                    source: trimmedSource,
+                    name: trimmedName?.isEmpty == false ? trimmedName : nil
+                )
+                await refreshSkillsAsync()
+                selectedSkillDiff = try? await brainClient.pendingSkillDiff(id: report.skillUpdate.id)
+                statusLine = report.answer
+            } catch {
+                statusLine = "Skill learning failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func refreshDashboardAsync() async {
         guard await brainClient.health() else { return }
         async let dashboard = try? brainClient.dashboard()
         async let performance = try? brainClient.performanceStatus()
+        async let dictationStatus = try? brainClient.dictationStatus()
+        async let prompts = try? brainClient.prompts()
+        async let scheduledAgents = try? brainClient.scheduledAgents()
+        async let modes = try? brainClient.assistantModes()
+        async let capabilities = try? brainClient.capabilities()
         performanceDashboard = await dashboard
         if let report = await performance {
             performanceReport = report
+        }
+        self.dictationBackendStatus = await dictationStatus
+        if let promptReport = await prompts {
+            applyPromptReport(promptReport)
+        }
+        if let agentReport = await scheduledAgents {
+            self.scheduledAgents = agentReport.agents
+            refreshScheduledAgentStatus()
+        }
+        if let modeReport = await modes {
+            assistantModes = modeReport.modes
+            defaultAssistantMode = modeReport.defaultMode
+        }
+        capabilityReport = await capabilities
+    }
+
+    private func configureDictation() {
+        dictation.onWillStartRecording = { [weak self] in
+            self?.prepareForDictationRecording()
+        }
+        dictation.onStatusChanged = { [weak self] status in
+            guard let self else { return }
+            dictationStatus = status
+            switch status.phase {
+            case .recording, .transcribing:
+                phase = .transcribing(status.transcript.isEmpty ? "Dictation" : status.transcript)
+            case .formatting:
+                phase = .thinking
+            case .inserting:
+                phase = .acting("Inserting dictation")
+            case .inserted, .canceled:
+                phase = .idle
+            case .error:
+                phase = .error(status.message)
+            case .idle:
+                break
+            }
+            if status.phase != .idle {
+                statusLine = status.message
+            }
+        }
+        dictation.configure(
+            DictationConfiguration(
+                hotkey: settings.dictation.dictationHotkey.rawValue,
+                handsFreeEnabled: settings.dictation.handsFreeDictation,
+                sttEngine: settings.dictation.sttEngine.rawValue,
+                postProcessing: settings.dictation.postProcessing.rawValue,
+                insertAutomatically: settings.dictation.insertAutomatically,
+                playSoundFeedback: settings.dictation.playSoundFeedback
+            ),
+            brainClient: brainClient,
+            activeAppNameProvider: { [weak self] in
+                self?.targetCapture.captureFrontmostApp().appName
+            }
+        )
+    }
+
+    private func prepareForDictationRecording() {
+        flow.cancelTimers()
+        flow.clearAwaitingFollowUp()
+        pendingFollowUpPrompt = nil
+        responseBeingSpoken = nil
+        endConversationAfterSpeech = false
+        if case .speaking = phase {
+            tts.stop()
+        }
+        if case .listening = phase {
+            _ = speech.stop()
+        }
+        if case .transcribing = phase {
+            _ = speech.stop()
+        }
+        cancelActiveTurn()
+        phase = .transcribing("Dictation")
+    }
+
+    private func refreshSkillsAsync() async {
+        guard await brainClient.health() else { return }
+        async let skills = try? brainClient.skills()
+        async let pending = try? brainClient.pendingSkillChanges()
+        async let bundles = try? brainClient.skillBundles()
+        async let history = try? brainClient.skillRunHistory(limit: 20)
+        if let report = await skills {
+            installedSkills = report.skills
+            skillsConfig = report.config
+        }
+        if let report = await pending {
+            pendingSkillChanges = report.changes
+            if let selectedSkillDiff, !report.changes.contains(where: { $0.id == selectedSkillDiff.id }) {
+                self.selectedSkillDiff = nil
+            }
+        }
+        if let report = await bundles {
+            skillBundles = report.bundles
+        }
+        if let report = await history {
+            skillRunHistory = report.runs
+        }
+    }
+
+    private func refreshScheduledAgentsAsync() async {
+        guard await brainClient.health() else { return }
+        if let report = try? await brainClient.scheduledAgents() {
+            scheduledAgents = report.agents
+            refreshScheduledAgentStatus()
+        }
+    }
+
+    private func refreshSkillRunHistoryAsync() async {
+        guard await brainClient.health() else { return }
+        if let report = try? await brainClient.skillRunHistory(limit: 20) {
+            skillRunHistory = report.runs
+        }
+    }
+
+    private func captureScheduleContext() async -> ScheduleContext? {
+        let schedule = await scheduleContextProvider?()
+        latestScheduleContext = schedule
+        return schedule
+    }
+
+    private func refreshAssistantModesAsync() async {
+        guard await brainClient.health() else { return }
+        if let report = try? await brainClient.assistantModes() {
+            assistantModes = report.modes
+            defaultAssistantMode = report.defaultMode
         }
     }
 
@@ -514,6 +891,7 @@ public final class JarvisAppModel: ObservableObject {
                 statusLine = "\(message). Local commands are ready while I reconnect."
                 return
             }
+            await syncPromptSettingsToBrain()
             if let testProvider {
                 do {
                     let report = try await brainClient.testProviders()
@@ -577,7 +955,7 @@ public final class JarvisAppModel: ObservableObject {
             target: session.targetAppSnapshot,
             settings: contextSettings(for: text)
         )
-        context.schedule = scheduleContextProvider?()
+        context.schedule = await captureScheduleContext()
         if shouldStartFreshSession(
             previous: previousContext,
             current: context,
@@ -614,6 +992,11 @@ public final class JarvisAppModel: ObservableObject {
             case .needsBrain, .notFollowUp:
                 break
             }
+        }
+
+        if intentRouter.prefersCloudAgent(text) {
+            await routeEscalatedRequest(text, context: context, localReason: "User requested the cloud agent.", turnID: turnID)
+            return
         }
 
         switch commandMatcher.match(text, shortcuts: settings.shortcuts) {
@@ -695,7 +1078,13 @@ public final class JarvisAppModel: ObservableObject {
                 appendTurnWarning(message)
             }
         }
-        await askBrain(text, context: context, mode: brainMode(for: text, context: context).rawValue, turnID: turnID)
+        await askBrain(
+            text,
+            context: context,
+            mode: brainMode(for: text, context: context).rawValue,
+            allowLocalFallback: !intentRouter.prefersCloudAgent(text),
+            turnID: turnID
+        )
     }
 
     private func askBrain(
@@ -703,13 +1092,15 @@ public final class JarvisAppModel: ObservableObject {
         context: ContextPacket?,
         injectedResults: [StructuredResult] = [],
         mode: String? = nil,
+        allowLocalFallback: Bool = true,
         turnID: UUID? = nil
     ) async {
         if let turnID {
             guard updateActiveTurn(turnID, status: .callingBrain) else { return }
         }
         guard await ensureBrainReady() else {
-            if let fallback = await localFallbackResponse(for: text, context: context, warning: "Local brain is still starting.") {
+            if allowLocalFallback,
+               let fallback = await localFallbackResponse(for: text, context: context, warning: "Local brain is still starting.") {
                 await present(response: fallback, userText: text, turnID: turnID)
                 return
             }
@@ -743,7 +1134,8 @@ public final class JarvisAppModel: ObservableObject {
 
         do {
             let response = try await brainClient.chat(request)
-            if shouldUseLocalFallback(for: response),
+            if allowLocalFallback,
+               shouldUseLocalFallback(for: response),
                let fallback = await localFallbackResponse(
                     for: text,
                     context: context,
@@ -755,7 +1147,8 @@ public final class JarvisAppModel: ObservableObject {
             await present(response: response, userText: text, turnID: turnID)
         } catch {
             appendTurnWarning("Brain request failed: \(error.localizedDescription)")
-            if let fallback = await localFallbackResponse(for: text, context: context, warning: error.localizedDescription) {
+            if allowLocalFallback,
+               let fallback = await localFallbackResponse(for: text, context: context, warning: error.localizedDescription) {
                 await present(response: fallback, userText: text, turnID: turnID)
                 return
             }
@@ -818,6 +1211,11 @@ public final class JarvisAppModel: ObservableObject {
         session.record(user: userText, response: finalResponse, timeoutMinutes: settings.session.idleTimeoutMinutes)
         if let first = finalResponse.results.first {
             session.lastSelectedEntity = first
+        }
+        if !finalResponse.skillUpdates.isEmpty {
+            await refreshSkillsAsync()
+        } else if finalResponse.metadata.selectedSkill != nil || finalResponse.metadata.selectedBundle != nil {
+            await refreshSkillRunHistoryAsync()
         }
 
         modelBadgeText = finalResponse.metadata.model ?? finalResponse.modelUsed ?? finalResponse.metadata.route ?? "Jarvis"
@@ -894,6 +1292,9 @@ public final class JarvisAppModel: ObservableObject {
             return FollowUpPromptPlan(spokenPrompt: nil, listeningPrompt: nil)
         }
         if response.metadata.route == "direct_command", response.results.isEmpty {
+            return FollowUpPromptPlan(spokenPrompt: nil, listeningPrompt: nil)
+        }
+        if response.metadata.route == "scheduled_agent" {
             return FollowUpPromptPlan(spokenPrompt: nil, listeningPrompt: nil)
         }
 
@@ -1017,12 +1418,265 @@ public final class JarvisAppModel: ObservableObject {
         async let fileIndex = try? fileIndexClient().status()
         async let dashboard = try? brainClient.dashboard()
         async let performance = try? brainClient.performanceStatus()
+        async let skills = try? brainClient.skills()
+        async let pending = try? brainClient.pendingSkillChanges()
+        async let bundles = try? brainClient.skillBundles()
+        async let dictationStatus = try? brainClient.dictationStatus()
+        async let prompts = try? brainClient.prompts()
+        async let scheduledAgents = try? brainClient.scheduledAgents()
+        async let modes = try? brainClient.assistantModes()
+        async let capabilities = try? brainClient.capabilities()
         providerDiagnostics = await diagnostics
         memoryStatus = await memory
         ttsStatus = await tts
         fileIndexStatus = await fileIndex
         performanceDashboard = await dashboard
         performanceReport = await performance
+        if let report = await skills {
+            installedSkills = report.skills
+            skillsConfig = report.config
+        }
+        if let report = await pending {
+            pendingSkillChanges = report.changes
+        }
+        if let report = await bundles {
+            skillBundles = report.bundles
+        }
+        dictationBackendStatus = await dictationStatus
+        if let promptReport = await prompts {
+            applyPromptReport(promptReport)
+        }
+        if let agentReport = await scheduledAgents {
+            self.scheduledAgents = agentReport.agents
+            refreshScheduledAgentStatus()
+        }
+        if let modeReport = await modes {
+            assistantModes = modeReport.modes
+            defaultAssistantMode = modeReport.defaultMode
+        }
+        capabilityReport = await capabilities
+    }
+
+    private func replaceScheduledAgent(_ agent: ScheduledAgent) {
+        if let index = scheduledAgents.firstIndex(where: { $0.id == agent.id }) {
+            scheduledAgents[index] = agent
+        } else {
+            scheduledAgents.append(agent)
+        }
+    }
+
+    private var activeScheduledAgents: [ScheduledAgent] {
+        scheduledAgents.filter { $0.enabled && $0.type == "scheduled" }
+    }
+
+    private var canRunScheduledAgentNow: Bool {
+        switch phase {
+        case .idle, .results:
+            true
+        case .listening, .transcribing, .thinking, .acting, .speaking, .confirming, .error:
+            false
+        }
+    }
+
+    private func restartScheduledAgentLoop() {
+        if scheduledAgentRunInProgress {
+            refreshScheduledAgentStatus()
+            return
+        }
+
+        scheduledAgentTask?.cancel()
+        scheduledAgentTask = nil
+
+        let activeAgents = activeScheduledAgents
+        guard !activeAgents.isEmpty else {
+            scheduledAgentStatus = "No active scheduled agents"
+            return
+        }
+
+        scheduledAgentStatus = scheduledAgentStatusLine(for: activeAgents)
+        scheduledAgentTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.runDueScheduledAgents()
+                do {
+                    try await Task.sleep(nanoseconds: Self.scheduledAgentPollIntervalNanoseconds)
+                } catch {
+                    break
+                }
+            }
+        }
+    }
+
+    private func refreshScheduledAgentStatus() {
+        scheduledAgentStatus = scheduledAgentStatusLine(for: activeScheduledAgents)
+    }
+
+    private func scheduledAgentStatusLine(for agents: [ScheduledAgent]) -> String {
+        guard !agents.isEmpty else { return "No active scheduled agents" }
+        if agents.count == 1, let agent = agents.first {
+            if let next = agent.nextRunAt, !next.isEmpty {
+                return "\(agent.name) active. Next run: \(next)"
+            }
+            return "\(agent.name) active"
+        }
+        return "\(agents.count) scheduled agents active"
+    }
+
+    private func runDueScheduledAgents() async {
+        guard brainReady else {
+            scheduledAgentStatus = "Scheduled agents waiting for brain"
+            return
+        }
+        guard !scheduledAgentRunInProgress else { return }
+
+        let dueAgents = activeScheduledAgents.filter { $0.isDue() }
+        guard !dueAgents.isEmpty else {
+            refreshScheduledAgentStatus()
+            return
+        }
+        guard canRunScheduledAgentNow else {
+            scheduledAgentStatus = "Scheduled agents waiting until Jarvis is idle"
+            return
+        }
+
+        scheduledAgentRunInProgress = true
+        defer {
+            scheduledAgentRunInProgress = false
+            refreshScheduledAgentStatus()
+        }
+
+        for agent in dueAgents {
+            guard !Task.isCancelled else { return }
+            await runScheduledAgent(agent)
+        }
+    }
+
+    private func runScheduledAgent(_ agent: ScheduledAgent) async {
+        let runAt = Date()
+        scheduledAgentStatus = "Running \(agent.name)"
+        statusLine = "Running \(agent.name)"
+
+        do {
+            let schedule = await captureScheduleContext()
+            let preview = try await brainClient.previewScheduledAgent(id: agent.id, schedule: schedule)
+            let updated = try await brainClient.recordScheduledAgentRun(id: agent.id, runAt: runAt)
+            replaceScheduledAgent(updated)
+
+            scheduledAgentPreview = preview
+            lastScheduledAgentRun = preview
+            lastScheduledAgentRunAt = runAt
+
+            let metadata = preview.metadata ?? ResponseMetadata(
+                route: "scheduled_agent",
+                modelRoute: "local_skill",
+                mode: agent.id,
+                contextAvailable: schedule?.hasAnyEntries == true
+            )
+            let response = StructuredResponse(
+                answer: preview.answer,
+                speak: preview.speak,
+                modelUsed: agent.name,
+                metadata: metadata
+            )
+            panelController?.show()
+            await present(response: response, userText: "scheduled \(agent.name)")
+            scheduledAgentStatus = "Last ran \(agent.name) at \(runAt.formatted(date: .abbreviated, time: .shortened))"
+        } catch {
+            scheduledAgentStatus = "\(agent.name) failed: \(error.localizedDescription)"
+            statusLine = scheduledAgentStatus
+        }
+    }
+
+    private func syncPromptSettingsToBrain() async {
+        guard await brainClient.health() else { return }
+        do {
+            let report = try await brainClient.savePrompts(promptReportsFromSettings())
+            applyPromptReport(report)
+        } catch {
+            statusLine = "Prompt sync failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func applyPromptReport(_ report: PromptListReport) {
+        editablePrompts = report.prompts
+        for prompt in report.prompts {
+            switch prompt.id {
+            case "assistant":
+                settings.prompts.assistantPrompt = prompt.content
+            case "dictation":
+                settings.dictation.dictationPrompt = prompt.content
+            case "email":
+                settings.dictation.emailPrompt = prompt.content
+            case "writing_style":
+                settings.dictation.writingStylePrompt = prompt.content
+            case "skill_learning":
+                settings.prompts.skillLearningPrompt = prompt.content
+            case "command_interpretation":
+                settings.prompts.commandInterpretationPrompt = prompt.content
+            default:
+                break
+            }
+        }
+    }
+
+    private func applyPromptSettingsToLocalReports() {
+        editablePrompts = promptReportsFromSettings()
+    }
+
+    private func promptReportsFromSettings() -> [JarvisPrompt] {
+        [
+            promptReport(
+                id: "assistant",
+                title: "Assistant Prompt",
+                description: "Default assistant behavior, tone, and context rules.",
+                content: settings.prompts.assistantPrompt
+            ),
+            promptReport(
+                id: "dictation",
+                title: "Dictation Cleanup Prompt",
+                description: "How dictated speech should be cleaned before insertion.",
+                content: settings.dictation.dictationPrompt
+            ),
+            promptReport(
+                id: "email",
+                title: "Email Formatting Prompt",
+                description: "How email drafts and dictated email text should be formatted.",
+                content: settings.dictation.emailPrompt
+            ),
+            promptReport(
+                id: "writing_style",
+                title: "Writing Style Prompt",
+                description: "Personal writing preferences to apply when editing or drafting.",
+                content: settings.dictation.writingStylePrompt
+            ),
+            promptReport(
+                id: "skill_learning",
+                title: "Skill Learning Prompt",
+                description: "How Jarvis drafts reusable SKILL.md procedures.",
+                content: settings.prompts.skillLearningPrompt
+            ),
+            promptReport(
+                id: "command_interpretation",
+                title: "Command Interpretation Prompt",
+                description: "How natural requests are mapped to modes, skills, and actions.",
+                content: settings.prompts.commandInterpretationPrompt
+            )
+        ]
+    }
+
+    private func promptReport(id: String, title: String, description: String, content: String) -> JarvisPrompt {
+        if var existing = editablePrompts.first(where: { $0.id == id }) {
+            existing.content = content
+            return existing
+        }
+        return JarvisPrompt(
+            id: id,
+            title: title,
+            description: description,
+            content: content,
+            source: "local",
+            editable: true,
+            path: nil
+        )
     }
 
     private func fileIndexClient() -> FileIndexClient {
@@ -1226,6 +1880,7 @@ public final class JarvisAppModel: ObservableObject {
     /// back to the cloud brain. Provider-backed answers remain the fallback for
     /// web, memory, unavailable local models, and requests that need deeper tools.
     private func shouldTryAppleLocalAnswer(_ text: String, localReason: String, context: ContextPacket?) async -> Bool {
+        if intentRouter.prefersCloudAgent(text) { return false }
         if localReason.lowercased().contains("memory") { return false }
         return await canUseAppleLocalModel(for: text, context: context, allowWeb: false)
     }
@@ -1262,6 +1917,7 @@ public final class JarvisAppModel: ObservableObject {
     }
 
     private func canUseAppleLocalModel(for text: String, context: ContextPacket?, allowWeb: Bool) async -> Bool {
+        if intentRouter.prefersCloudAgent(text) { return false }
         var intent = await intentClassifier.classifyIntent(text)
         if intent == .general, shouldTreatAsSelectedTextRequest(text, context: context) {
             intent = .screenContext

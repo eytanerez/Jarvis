@@ -23,7 +23,7 @@ async def runtime_dashboard(container: ServiceContainer = Depends(get_container)
     """Aggregated, non-blocking status for the performance dashboard (Priority 7).
 
     Reads only in-memory state and the lightweight file-index status. It never
-    runs the Chatterbox subprocess probe or loads any model, so polling it stays
+    runs the F5-TTS subprocess probe or loads any model, so polling it stays
     cheap while idle Jarvis stays quiet.
     """
     performance = container.performance
@@ -39,7 +39,7 @@ async def runtime_dashboard(container: ServiceContainer = Depends(get_container)
         {"name": "fileIndexWatcher", "running": bool(fi_status.get("watching"))},
         {"name": "fileIndexScan", "running": bool(fi_status.get("currentlyIndexing"))},
         {"name": "ttsIdleReaper", "running": tts.reaper_running()},
-        {"name": "chatterboxWorker", "running": tts_snapshot.get("chatterboxWorkerRunning", False)},
+        {"name": "f5TTSWorker", "running": tts_snapshot.get("f5TTSWorkerRunning", False)},
     ]
 
     return {

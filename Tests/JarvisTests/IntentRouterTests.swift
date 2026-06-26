@@ -56,6 +56,7 @@ final class IntentRouterTests: XCTestCase {
     func testModeSelection() {
         XCTAssertEqual(router.mode(for: "compare these two laptops", hasBrowserContext: false), .smart)
         XCTAssertEqual(router.mode(for: "think through this decision", hasBrowserContext: false), .smart)
+        XCTAssertEqual(router.mode(for: "use clout agent to think through this", hasBrowserContext: false), .smart)
         XCTAssertEqual(router.mode(for: "summarize the page", hasBrowserContext: false), .fast)
         XCTAssertEqual(router.mode(for: "summarize this article", hasBrowserContext: false), .fast)
         XCTAssertEqual(router.mode(for: "what time is it", hasBrowserContext: false), .fast)
@@ -66,5 +67,11 @@ final class IntentRouterTests: XCTestCase {
 
     func testNormalizationHandlesSmartQuotes() {
         XCTAssertTrue(router.isMemoryRequest("don’t forget the milk"))
+    }
+
+    func testPrefersCloudAgentAliases() {
+        XCTAssertTrue(router.prefersCloudAgent("use cloud agent to answer this"))
+        XCTAssertTrue(router.prefersCloudAgent("use a clout agent for this"))
+        XCTAssertFalse(router.prefersCloudAgent("what is cloud computing"))
     }
 }

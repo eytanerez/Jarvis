@@ -83,8 +83,8 @@ class PerformanceSettings:
         return False
 
     @property
-    def chatterbox_preload(self) -> bool:
-        # Chatterbox is only ever loaded on demand, never preloaded.
+    def f5_tts_preload(self) -> bool:
+        # F5-TTS is only ever loaded on demand, never preloaded.
         return False
 
     @property
@@ -107,7 +107,7 @@ class PerformanceSettings:
         return {
             "fileIndexDefaultMode": self.file_index_default_mode,
             "backgroundFullIndexing": self.background_full_indexing,
-            "chatterboxPreload": self.chatterbox_preload,
+            "f5TTSPreload": self.f5_tts_preload,
             "memorySuggestions": self.memory_suggestions,
             "screenshotFallback": self.screenshot_fallback,
             "shortestSpokenResponses": self.shortest_spoken_responses,

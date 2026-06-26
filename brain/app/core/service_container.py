@@ -11,6 +11,12 @@ if TYPE_CHECKING:  # avoid importing heavy modules at type-check time only
     from ..memory_service import MemoryService
     from ..provider_manager import ProviderManager
     from ..runtime_secrets import RuntimeSecrets
+    from .modes import ModeRegistry
+    from .prompts import PromptService
+    from .scheduled_agents import ScheduledAgentService
+    from .skills import SkillManager
+    from .capabilities import CapabilityRegistry
+    from ..dictation import DictationService
     from ..tts_service import TTSService
     from ..web_search import WebSearch
 
@@ -18,7 +24,7 @@ if TYPE_CHECKING:  # avoid importing heavy modules at type-check time only
 class ServiceContainer:
     """Owns one instance of every brain service and builds them lazily.
 
-    Creating the container is cheap: nothing heavy (TTS models, Chatterbox
+    Creating the container is cheap: nothing heavy (TTS models, F5-TTS
     subprocess, file scans, memory embeddings) runs until the matching service
     is first requested. ``main.py`` and every route share a single container, so
     ``/files/*`` and chat file logic use the same ``FileIndexService``,
@@ -35,6 +41,12 @@ class ServiceContainer:
         self._tts_service: Optional["TTSService"] = None
         self._web_search: Optional["WebSearch"] = None
         self._file_index_service: Optional["FileIndexService"] = None
+        self._mode_registry: Optional["ModeRegistry"] = None
+        self._prompt_service: Optional["PromptService"] = None
+        self._scheduled_agent_service: Optional["ScheduledAgentService"] = None
+        self._skill_manager: Optional["SkillManager"] = None
+        self._capability_registry: Optional["CapabilityRegistry"] = None
+        self._dictation_service: Optional["DictationService"] = None
         self._chat_service: Optional["ChatService"] = None
 
     @property
@@ -101,6 +113,68 @@ class ServiceContainer:
             return self._file_index_service
 
     @property
+    def mode_registry(self) -> "ModeRegistry":
+        with self._lock:
+            if self._mode_registry is None:
+                from .modes import ModeRegistry
+
+                self._mode_registry = ModeRegistry()
+            return self._mode_registry
+
+    @property
+    def prompt_service(self) -> "PromptService":
+        with self._lock:
+            if self._prompt_service is None:
+                from .prompts import PromptService
+
+                self._prompt_service = PromptService()
+            return self._prompt_service
+
+    @property
+    def scheduled_agent_service(self) -> "ScheduledAgentService":
+        with self._lock:
+            if self._scheduled_agent_service is None:
+                from .scheduled_agents import ScheduledAgentService
+
+                self._scheduled_agent_service = ScheduledAgentService()
+            return self._scheduled_agent_service
+
+    @property
+    def skill_manager(self) -> "SkillManager":
+        with self._lock:
+            if self._skill_manager is None:
+                from .skills import SkillManager
+
+                self._skill_manager = SkillManager()
+            return self._skill_manager
+
+    @property
+    def capability_registry(self) -> "CapabilityRegistry":
+        with self._lock:
+            if self._capability_registry is None:
+                from .capabilities import CapabilityRegistry
+
+                self._capability_registry = CapabilityRegistry(
+                    providers=self.provider_manager,
+                    memory=self.memory_service,
+                    file_index=self.file_index_service,
+                    web=self.web_search,
+                    skill_manager=self.skill_manager,
+                    dictation=self.dictation_service,
+                    tts=self.tts_service,
+                )
+            return self._capability_registry
+
+    @property
+    def dictation_service(self) -> "DictationService":
+        with self._lock:
+            if self._dictation_service is None:
+                from ..dictation import DictationService
+
+                self._dictation_service = DictationService(prompts=self.prompt_service)
+            return self._dictation_service
+
+    @property
     def chat_service(self) -> "ChatService":
         with self._lock:
             if self._chat_service is None:
@@ -113,5 +187,9 @@ class ServiceContainer:
                     web=self.web_search,
                     file_index=self.file_index_service,
                     performance=self.performance,
+                    mode_registry=self.mode_registry,
+                    prompts=self.prompt_service,
+                    skill_manager=self.skill_manager,
+                    capability_registry=self.capability_registry,
                 )
             return self._chat_service

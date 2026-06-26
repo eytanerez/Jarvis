@@ -19,9 +19,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-chatterbox = [
-  # Chatterbox runs in brain/.venv-chatterbox because it needs NumPy 1.x,
-  # while Kokoro in the main brain venv needs NumPy 2.x.
+f5-tts = [
+  # F5-TTS runs in brain/.venv-f5-tts so its heavy torch/audio stack stays
+  # isolated from the lightweight FastAPI brain and Kokoro dependencies.
 ]
 
 [tool.pytest.ini_options]

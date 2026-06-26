@@ -38,7 +38,7 @@ final class JarvisAssistantBridge: ObservableObject {
         started = true
         JarvisScheduleSnapshotProvider.shared.start()
         model.scheduleContextProvider = {
-            JarvisScheduleSnapshotProvider.shared.snapshot()
+            await JarvisScheduleSnapshotProvider.shared.snapshot(forceRefresh: true)
         }
         model.onLocalActionWillExecute = { [weak self] action in
             self?.handleLocalAction(action)

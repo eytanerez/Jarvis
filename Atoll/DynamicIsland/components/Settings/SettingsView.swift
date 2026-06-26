@@ -724,7 +724,7 @@ struct SettingsView: View {
             SettingsSearchEntry(tab: .jarvis, title: "Providers", keywords: ["jarvis", "openai", "anthropic", "gemini", "api key", "models"], highlightID: nil),
             SettingsSearchEntry(tab: .jarvis, title: "Shortcuts", keywords: ["jarvis", "shortcut", "url", "open"], highlightID: nil),
             SettingsSearchEntry(tab: .jarvis, title: "Privacy", keywords: ["jarvis", "memory", "microphone", "permissions"], highlightID: nil),
-            SettingsSearchEntry(tab: .jarvis, title: "Voice", keywords: ["jarvis", "tts", "kokoro", "chatterbox", "speech", "personality"], highlightID: nil),
+            SettingsSearchEntry(tab: .jarvis, title: "Voice", keywords: ["jarvis", "tts", "kokoro", "f5-tts", "speech", "personality"], highlightID: nil),
 
             // Live Activities
             SettingsSearchEntry(tab: .liveActivities, title: "Enable Focus Detection", keywords: ["focus", "do not disturb", "dnd"], highlightID: SettingsTab.liveActivities.highlightID(for: "Enable Focus Detection")),

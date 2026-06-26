@@ -4,6 +4,8 @@
 dist/
 brain/.venv/
 brain/.venv-chatterbox/
+brain/.venv-f5-tts/
+brain/.venv*/
 brain/.pytest_cache/
 brain/__pycache__/
 brain/app/__pycache__/

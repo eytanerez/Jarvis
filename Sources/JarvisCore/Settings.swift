@@ -85,7 +85,7 @@ public struct ShortcutConfig: Codable, Equatable, Sendable, Identifiable {
 
 public enum TTSEngine: String, Codable, CaseIterable, Identifiable, Sendable {
     case kokoro
-    case chatterbox
+    case f5tts
     case apple
 
     public var id: String { rawValue }
@@ -93,9 +93,28 @@ public enum TTSEngine: String, Codable, CaseIterable, Identifiable, Sendable {
     public var displayName: String {
         switch self {
         case .kokoro: "Kokoro"
-        case .chatterbox: "Chatterbox"
+        case .f5tts: "F5-TTS"
         case .apple: "Apple"
         }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self).lowercased()
+        switch raw {
+        case "kokoro":
+            self = .kokoro
+        case "f5tts", "f5-tts", "f5_tts", "chatterbox":
+            self = .f5tts
+        case "apple":
+            self = .apple
+        default:
+            self = .kokoro
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 
@@ -104,10 +123,10 @@ public struct VoiceSettings: Codable, Equatable, Sendable {
     public var voiceIdentifier: String?
     public var kokoroVoice: String
     public var kokoroSpeed: Double
-    public var chatterboxVoiceReferencePath: String
-    public var chatterboxExaggeration: Double
-    public var chatterboxCfgWeight: Double
-    public var chatterboxStylePreset: String
+    public var f5VoiceReferencePath: String
+    public var f5ReferenceText: String
+    public var f5CfgStrength: Double
+    public var f5NfeStep: Int
     public var fallbackToAppleSpeech: Bool
     public var spokenSummaryLimit: Int
 
@@ -116,10 +135,10 @@ public struct VoiceSettings: Codable, Equatable, Sendable {
         voiceIdentifier: String? = nil,
         kokoroVoice: String = "af_heart",
         kokoroSpeed: Double = 1.0,
-        chatterboxVoiceReferencePath: String = "",
-        chatterboxExaggeration: Double = 0.45,
-        chatterboxCfgWeight: Double = 0.50,
-        chatterboxStylePreset: String = "balanced",
+        f5VoiceReferencePath: String = "",
+        f5ReferenceText: String = "",
+        f5CfgStrength: Double = 2.0,
+        f5NfeStep: Int = 32,
         fallbackToAppleSpeech: Bool = true,
         spokenSummaryLimit: Int = 220
     ) {
@@ -127,10 +146,10 @@ public struct VoiceSettings: Codable, Equatable, Sendable {
         self.voiceIdentifier = voiceIdentifier
         self.kokoroVoice = kokoroVoice
         self.kokoroSpeed = kokoroSpeed
-        self.chatterboxVoiceReferencePath = chatterboxVoiceReferencePath
-        self.chatterboxExaggeration = chatterboxExaggeration
-        self.chatterboxCfgWeight = chatterboxCfgWeight
-        self.chatterboxStylePreset = chatterboxStylePreset
+        self.f5VoiceReferencePath = f5VoiceReferencePath
+        self.f5ReferenceText = f5ReferenceText
+        self.f5CfgStrength = f5CfgStrength
+        self.f5NfeStep = f5NfeStep
         self.fallbackToAppleSpeech = fallbackToAppleSpeech
         self.spokenSummaryLimit = spokenSummaryLimit
     }
@@ -140,10 +159,11 @@ public struct VoiceSettings: Codable, Equatable, Sendable {
         case voiceIdentifier
         case kokoroVoice
         case kokoroSpeed
+        case f5VoiceReferencePath
+        case f5ReferenceText
+        case f5CfgStrength
+        case f5NfeStep
         case chatterboxVoiceReferencePath
-        case chatterboxExaggeration
-        case chatterboxCfgWeight
-        case chatterboxStylePreset
         case fallbackToAppleSpeech
         case spokenSummaryLimit
     }
@@ -154,10 +174,12 @@ public struct VoiceSettings: Codable, Equatable, Sendable {
         voiceIdentifier = try container.decodeIfPresent(String.self, forKey: .voiceIdentifier)
         kokoroVoice = try container.decodeIfPresent(String.self, forKey: .kokoroVoice) ?? "af_heart"
         kokoroSpeed = try container.decodeIfPresent(Double.self, forKey: .kokoroSpeed) ?? 1.0
-        chatterboxVoiceReferencePath = try container.decodeIfPresent(String.self, forKey: .chatterboxVoiceReferencePath) ?? ""
-        chatterboxExaggeration = try container.decodeIfPresent(Double.self, forKey: .chatterboxExaggeration) ?? 0.45
-        chatterboxCfgWeight = try container.decodeIfPresent(Double.self, forKey: .chatterboxCfgWeight) ?? 0.50
-        chatterboxStylePreset = try container.decodeIfPresent(String.self, forKey: .chatterboxStylePreset) ?? "balanced"
+        f5VoiceReferencePath = try container.decodeIfPresent(String.self, forKey: .f5VoiceReferencePath)
+            ?? container.decodeIfPresent(String.self, forKey: .chatterboxVoiceReferencePath)
+            ?? ""
+        f5ReferenceText = try container.decodeIfPresent(String.self, forKey: .f5ReferenceText) ?? ""
+        f5CfgStrength = try container.decodeIfPresent(Double.self, forKey: .f5CfgStrength) ?? 2.0
+        f5NfeStep = try container.decodeIfPresent(Int.self, forKey: .f5NfeStep) ?? 32
         fallbackToAppleSpeech = try container.decodeIfPresent(Bool.self, forKey: .fallbackToAppleSpeech) ?? true
         spokenSummaryLimit = try container.decodeIfPresent(Int.self, forKey: .spokenSummaryLimit) ?? 220
     }
@@ -168,10 +190,10 @@ public struct VoiceSettings: Codable, Equatable, Sendable {
         try container.encodeIfPresent(voiceIdentifier, forKey: .voiceIdentifier)
         try container.encode(kokoroVoice, forKey: .kokoroVoice)
         try container.encode(kokoroSpeed, forKey: .kokoroSpeed)
-        try container.encode(chatterboxVoiceReferencePath, forKey: .chatterboxVoiceReferencePath)
-        try container.encode(chatterboxExaggeration, forKey: .chatterboxExaggeration)
-        try container.encode(chatterboxCfgWeight, forKey: .chatterboxCfgWeight)
-        try container.encode(chatterboxStylePreset, forKey: .chatterboxStylePreset)
+        try container.encode(f5VoiceReferencePath, forKey: .f5VoiceReferencePath)
+        try container.encode(f5ReferenceText, forKey: .f5ReferenceText)
+        try container.encode(f5CfgStrength, forKey: .f5CfgStrength)
+        try container.encode(f5NfeStep, forKey: .f5NfeStep)
         try container.encode(fallbackToAppleSpeech, forKey: .fallbackToAppleSpeech)
         try container.encode(spokenSummaryLimit, forKey: .spokenSummaryLimit)
     }
@@ -185,6 +207,94 @@ public struct SessionSettings: Codable, Equatable, Sendable {
         self.followUpContextEnabled = followUpContextEnabled
         self.idleTimeoutMinutes = idleTimeoutMinutes
     }
+}
+
+public enum DictationHotkey: String, Codable, CaseIterable, Identifiable, Sendable {
+    case function
+    case rightOption
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .function: "Fn"
+        case .rightOption: "Right Option"
+        }
+    }
+}
+
+public enum STTEngine: String, Codable, CaseIterable, Identifiable, Sendable {
+    case apple
+    case whisper
+    case parakeet
+    case deepgram
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .apple: "Apple"
+        case .whisper: "Whisper"
+        case .parakeet: "Parakeet"
+        case .deepgram: "Deepgram"
+        }
+    }
+}
+
+public enum DictationPostProcessing: String, Codable, CaseIterable, Identifiable, Sendable {
+    case off
+    case gemini
+    case ollama
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .off: "Off"
+        case .gemini: "Gemini"
+        case .ollama: "Ollama"
+        }
+    }
+}
+
+public struct DictationSettings: Codable, Equatable, Sendable {
+    public var dictationHotkey: DictationHotkey
+    public var assistantHotkey: String
+    public var handsFreeDictation: Bool
+    public var sttEngine: STTEngine
+    public var postProcessing: DictationPostProcessing
+    public var dictationPrompt: String
+    public var emailPrompt: String
+    public var writingStylePrompt: String
+    public var insertAutomatically: Bool
+    public var playSoundFeedback: Bool
+
+    public init(
+        dictationHotkey: DictationHotkey = .function,
+        assistantHotkey: String = "Option+Space",
+        handsFreeDictation: Bool = true,
+        sttEngine: STTEngine = .apple,
+        postProcessing: DictationPostProcessing = .off,
+        dictationPrompt: String = DictationSettings.defaultDictationPrompt,
+        emailPrompt: String = DictationSettings.defaultEmailPrompt,
+        writingStylePrompt: String = "",
+        insertAutomatically: Bool = true,
+        playSoundFeedback: Bool = true
+    ) {
+        self.dictationHotkey = dictationHotkey
+        self.assistantHotkey = assistantHotkey
+        self.handsFreeDictation = handsFreeDictation
+        self.sttEngine = sttEngine
+        self.postProcessing = postProcessing
+        self.dictationPrompt = dictationPrompt
+        self.emailPrompt = emailPrompt
+        self.writingStylePrompt = writingStylePrompt
+        self.insertAutomatically = insertAutomatically
+        self.playSoundFeedback = playSoundFeedback
+    }
+
+    public static let defaultDictationPrompt = "Output only what was spoken. Remove filler words, fix punctuation, preserve spoken signatures, handle self-corrections, and do not invent content."
+    public static let defaultEmailPrompt = "Preserve my voice and signature, add clean line breaks, and do not over-corporatize."
 }
 
 public struct MemorySettings: Codable, Equatable, Sendable {
@@ -390,7 +500,7 @@ public enum PerformanceMode: String, Codable, CaseIterable, Identifiable, Sendab
     public var detail: String {
         switch self {
         case .performance:
-            "Lightest footprint: no background indexing, no Chatterbox preload, shortest spoken replies, no memory suggestions."
+            "Lightest footprint: no background indexing, no F5-TTS preload, shortest spoken replies, no memory suggestions."
         case .balanced:
             "Everyday default: manual file indexing, Kokoro voice, context captured on Option-Space, Gemini only when needed."
         case .fullContext:
@@ -416,16 +526,38 @@ public struct PerformanceSettings: Codable, Equatable, Sendable {
     }
 }
 
+public struct PromptSettings: Codable, Equatable, Sendable {
+    public var assistantPrompt: String
+    public var skillLearningPrompt: String
+    public var commandInterpretationPrompt: String
+
+    public init(
+        assistantPrompt: String = PromptSettings.defaultAssistantPrompt,
+        skillLearningPrompt: String = PromptSettings.defaultSkillLearningPrompt,
+        commandInterpretationPrompt: String = PromptSettings.defaultCommandInterpretationPrompt
+    ) {
+        self.assistantPrompt = assistantPrompt
+        self.skillLearningPrompt = skillLearningPrompt
+        self.commandInterpretationPrompt = commandInterpretationPrompt
+    }
+
+    public static let defaultAssistantPrompt = "You are Jarvis, a natural Mac-native personal assistant. Be short, helpful, and grounded in the Mac context the app provides. Use selected text first. Never say as an AI. Ask one specific question when context is missing."
+    public static let defaultSkillLearningPrompt = "Draft reusable SKILL.md procedures from explicit workflows, docs, or user-described steps. Stage skill changes for approval and never include secrets."
+    public static let defaultCommandInterpretationPrompt = "Map natural requests to the clearest mode, local skill, loaded skill, or model route. Prefer instant local actions for tiny commands and ask for confirmation before risky actions."
+}
+
 public struct AppSettings: Codable, Equatable, Sendable {
     public var providers: [ProviderConfig]
     public var providerFallbackOrder: [ProviderID]
     public var shortcuts: [ShortcutConfig]
     public var voice: VoiceSettings
     public var session: SessionSettings
+    public var dictation: DictationSettings
     public var memory: MemorySettings
     public var context: ContextSettings
     public var webSearch: WebSearchSettings
     public var performance: PerformanceSettings
+    public var prompts: PromptSettings
     public var personality: AssistantPersonality
 
     public init(
@@ -434,10 +566,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         shortcuts: [ShortcutConfig] = AppSettings.defaultShortcuts,
         voice: VoiceSettings = VoiceSettings(),
         session: SessionSettings = SessionSettings(),
+        dictation: DictationSettings = DictationSettings(),
         memory: MemorySettings = MemorySettings(),
         context: ContextSettings = ContextSettings(),
         webSearch: WebSearchSettings = WebSearchSettings(),
         performance: PerformanceSettings = PerformanceSettings(),
+        prompts: PromptSettings = PromptSettings(),
         personality: AssistantPersonality = .default
     ) {
         self.providers = providers
@@ -445,10 +579,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.shortcuts = shortcuts
         self.voice = voice
         self.session = session
+        self.dictation = dictation
         self.memory = memory
         self.context = context
         self.webSearch = webSearch
         self.performance = performance
+        self.prompts = prompts
         self.personality = personality
     }
 
@@ -458,10 +594,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case shortcuts
         case voice
         case session
+        case dictation
         case memory
         case context
         case webSearch
         case performance
+        case prompts
         case personality
     }
 
@@ -472,10 +610,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         shortcuts = try container.decodeIfPresent([ShortcutConfig].self, forKey: .shortcuts) ?? AppSettings.defaultShortcuts
         voice = try container.decodeIfPresent(VoiceSettings.self, forKey: .voice) ?? VoiceSettings()
         session = try container.decodeIfPresent(SessionSettings.self, forKey: .session) ?? SessionSettings()
+        dictation = try container.decodeIfPresent(DictationSettings.self, forKey: .dictation) ?? DictationSettings()
         memory = try container.decodeIfPresent(MemorySettings.self, forKey: .memory) ?? MemorySettings()
         context = try container.decodeIfPresent(ContextSettings.self, forKey: .context) ?? ContextSettings()
         webSearch = try container.decodeIfPresent(WebSearchSettings.self, forKey: .webSearch) ?? WebSearchSettings()
         performance = try container.decodeIfPresent(PerformanceSettings.self, forKey: .performance) ?? PerformanceSettings()
+        prompts = try container.decodeIfPresent(PromptSettings.self, forKey: .prompts) ?? PromptSettings()
         personality = try container.decodeIfPresent(AssistantPersonality.self, forKey: .personality) ?? .default
     }
 
@@ -486,10 +626,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         try container.encode(shortcuts, forKey: .shortcuts)
         try container.encode(voice, forKey: .voice)
         try container.encode(session, forKey: .session)
+        try container.encode(dictation, forKey: .dictation)
         try container.encode(memory, forKey: .memory)
         try container.encode(context, forKey: .context)
         try container.encode(webSearch, forKey: .webSearch)
         try container.encode(performance, forKey: .performance)
+        try container.encode(prompts, forKey: .prompts)
         try container.encode(personality, forKey: .personality)
     }
 

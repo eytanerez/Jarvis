@@ -28,5 +28,5 @@ scripts/test.sh
 - The existing Atoll tabs and UI patterns are preserved.
 - API keys are stored in macOS Keychain by the app.
 - The Python brain uses `mem0ai` when installed, with a local fallback for development.
-- Kokoro remains the default local TTS engine. Chatterbox runs in a separate helper venv because its NumPy requirements conflict with Kokoro:
-  `scripts/install_chatterbox.sh`.
+- Kokoro remains the default local TTS engine. F5-TTS runs in a separate helper venv so its torch/audio stack stays isolated:
+  `scripts/install_f5_tts.sh`.

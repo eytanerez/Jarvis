@@ -45,7 +45,7 @@ public final class TTSManager: NSObject, @preconcurrency AVAudioPlayerDelegate, 
         onPreparing?()
         log("request \(generationId.uuidString) textLength=\(clipped.count) first80=\"\(String(clipped.prefix(80)))\"")
         let voiceStyle = style ?? VoiceStyle.style(for: .neutral, spokenLimit: limit)
-        if settings.ttsEngine == .kokoro || settings.ttsEngine == .chatterbox, let brainClient {
+        if settings.ttsEngine == .kokoro || settings.ttsEngine == .f5tts, let brainClient {
             let primaryRequest = synthesisRequest(
                 text: clipped,
                 engine: settings.ttsEngine,
@@ -85,7 +85,7 @@ public final class TTSManager: NSObject, @preconcurrency AVAudioPlayerDelegate, 
                         )
                     }
                 } catch {
-                    if settings.ttsEngine == .chatterbox, settings.fallbackToAppleSpeech {
+                    if settings.ttsEngine == .f5tts, settings.fallbackToAppleSpeech {
                         do {
                             let data = try await brainClient.synthesizeSpeech(kokoroFallbackRequest)
                             guard !Task.isCancelled else { return }
@@ -101,7 +101,7 @@ public final class TTSManager: NSObject, @preconcurrency AVAudioPlayerDelegate, 
                         } catch {
                             await MainActor.run {
                                 self?.handlePlaybackFailure(
-                                    message: "Chatterbox and Kokoro could not synthesize speech: \(error.localizedDescription)",
+                                    message: "F5-TTS and Kokoro could not synthesize speech: \(error.localizedDescription)",
                                     generationId: generationId,
                                     fallbackText: clipped,
                                     allowFallback: settings.fallbackToAppleSpeech
@@ -126,16 +126,17 @@ public final class TTSManager: NSObject, @preconcurrency AVAudioPlayerDelegate, 
     }
 
     private func synthesisRequest(text: String, engine: TTSEngine, settings: VoiceSettings, style: VoiceStyle) -> TTSSynthesisRequest {
-        let referencePath = settings.chatterboxVoiceReferencePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let referencePath = settings.f5VoiceReferencePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let referenceText = settings.f5ReferenceText.trimmingCharacters(in: .whitespacesAndNewlines)
         return TTSSynthesisRequest(
             text: text,
             engine: engine.rawValue,
             voice: style.ttsVoice ?? settings.kokoroVoice,
             speed: scaledSpeed(settings.kokoroSpeed, style: style),
             referenceAudioPath: referencePath.isEmpty ? nil : referencePath,
-            exaggeration: scaled(settings.chatterboxExaggeration, target: style.exaggeration, minimum: 0.15, maximum: 1.20),
-            cfgWeight: scaled(settings.chatterboxCfgWeight, target: style.cfgWeight, minimum: 0.10, maximum: 1.20),
-            stylePreset: settings.chatterboxStylePreset
+            referenceText: referenceText.isEmpty ? nil : referenceText,
+            cfgStrength: scaledF5CfgStrength(settings.f5CfgStrength, style: style),
+            nfeStep: settings.f5NfeStep
         )
     }
 
@@ -145,6 +146,10 @@ public final class TTSManager: NSObject, @preconcurrency AVAudioPlayerDelegate, 
 
     private func scaled(_ base: Double, target: Double, minimum: Double, maximum: Double) -> Double {
         min(max(base * target, minimum), maximum)
+    }
+
+    private func scaledF5CfgStrength(_ base: Double, style: VoiceStyle) -> Double {
+        min(max(base * (style.cfgWeight / 0.50), 0.5), 5.0)
     }
 
     private func handleAudioResponse(data: Data, generationId: UUID, fallbackText: String, allowFallback: Bool) {

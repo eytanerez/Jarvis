@@ -1,7 +1,7 @@
 pyproject.toml
 app/__init__.py
 app/chat_service.py
-app/chatterbox_worker.py
+app/f5_tts_worker.py
 app/main.py
 app/memory_service.py
 app/provider_manager.py

@@ -40,6 +40,23 @@ class ResponseMetadata(BaseModel):
     route: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    modelRoute: Optional[str] = None
+    taskType: Optional[str] = None
+    why: Optional[str] = None
+    latencyTargetMs: Optional[int] = None
+    privacyLevel: Optional[str] = None
+    mode: Optional[str] = None
+    intent: Optional[str] = None
+    selectedCapability: Optional[str] = None
+    selectedSkill: Optional[str] = None
+    selectedBundle: Optional[str] = None
+    skillLoaded: Optional[bool] = None
+    riskLevel: Optional[str] = None
+    loadedSkills: List[str] = Field(default_factory=list)
+    missingSkills: List[str] = Field(default_factory=list)
+    bundleInvocation: Optional[str] = None
+    trace: Dict[str, Any] = Field(default_factory=dict)
+    situation: Dict[str, Any] = Field(default_factory=dict)
     usedMemory: bool = False
     usedWeb: bool = False
     usedScreenContext: bool = False
@@ -49,6 +66,7 @@ class ResponseMetadata(BaseModel):
     ttsEngine: Optional[str] = None
     mood: Optional[str] = None
     actionCount: Optional[int] = None
+    skillPromotionSuggestion: Optional[Dict[str, Any]] = None
 
 
 class StructuredResponse(BaseModel):
@@ -57,6 +75,7 @@ class StructuredResponse(BaseModel):
     results: List[StructuredResult] = Field(default_factory=list)
     actions: List[AssistantAction] = Field(default_factory=list)
     memoryUpdates: List[MemoryUpdate] = Field(default_factory=list)
+    skillUpdates: List[Dict[str, Any]] = Field(default_factory=list)
     requiresConfirmation: bool = False
     confirmation: Optional[ConfirmationRequest] = None
     modelUsed: Optional[str] = None
@@ -136,6 +155,6 @@ class TTSRequest(BaseModel):
     voice: str = "af_heart"
     speed: float = 1.0
     referenceAudioPath: Optional[str] = None
-    exaggeration: Optional[float] = None
-    cfgWeight: Optional[float] = None
-    stylePreset: Optional[str] = None
+    referenceText: Optional[str] = None
+    cfgStrength: Optional[float] = None
+    nfeStep: Optional[int] = None

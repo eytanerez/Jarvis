@@ -15,4 +15,4 @@ Requires-Dist: google-genai>=1.0
 Requires-Dist: kokoro-onnx>=0.5.0
 Requires-Dist: soundfile>=0.12
 Requires-Dist: pytest>=8.0
-Provides-Extra: chatterbox
+Provides-Extra: f5-tts

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,9 @@ class MemoryService:
         self.home = Path(os.environ.get("JARVIS_BRAIN_HOME", Path.home() / "Library/Application Support/JarvisNotch"))
         self.home.mkdir(parents=True, exist_ok=True)
         self.fallback_path = self.home / "memories.json"
+        self.profile_path = Path(
+            os.environ.get("JARVIS_USER_PROFILE_MEMORY_PATH", self.home / "user_profile_memory.md")
+        )
         self._mem0: Any = None
         self._mem0_checked = False
         self._mem0_provider: Optional[str] = None
@@ -69,9 +73,9 @@ class MemoryService:
                 result = mem0.search(query, user_id="eytan", limit=limit)
                 self.last_error = None
                 if isinstance(result, list):
-                    return result[:limit]
+                    return self._with_profile_results(query, result, limit)
                 if isinstance(result, dict):
-                    return result.get("results", [])[:limit]
+                    return self._with_profile_results(query, result.get("results", []), limit)
             except Exception as exc:
                 self.last_error = self._friendly_mem0_error(exc)
 
@@ -92,10 +96,32 @@ class MemoryService:
                 if item.get("id") in ids:
                     item["lastUsedAt"] = used_at
             self._save_fallback(memories)
-        return results
+        return self._with_profile_results(query, results, limit)
 
     def list(self) -> List[Dict[str, Any]]:
-        return self._load_fallback()
+        memories = self._load_fallback()
+        profile = self.profile_memory()
+        return ([profile] if profile else []) + memories
+
+    def profile_memory(self) -> Optional[Dict[str, Any]]:
+        text = self._load_profile_text()
+        if not text:
+            return None
+        return {
+            "id": "user_profile_memory",
+            "text": text,
+            "category": "profile",
+            "confidence": 1.0,
+            "source": "user_profile_memory_file",
+            "createdAt": self._profile_timestamp(),
+            "lastUsedAt": None,
+            "metadata": {
+                "category": "profile",
+                "source": "user_profile_memory_file",
+                "path": str(self.profile_path),
+            },
+            "provider": "profile_file",
+        }
 
     def status(self) -> Dict[str, Any]:
         mem0 = self._mem0_client()
@@ -115,6 +141,8 @@ class MemoryService:
             "mem0EmbedderProvider": self._mem0_embedder_provider,
             "fallbackPath": str(self.fallback_path),
             "fallbackCount": len(self._load_fallback()),
+            "profilePath": str(self.profile_path),
+            "profileMemoryPresent": self.profile_memory() is not None,
             "lastError": self.last_error,
         }
 
@@ -308,6 +336,69 @@ class MemoryService:
 
     def _save_fallback(self, memories: List[Dict[str, Any]]) -> None:
         self.fallback_path.write_text(json.dumps(memories, indent=2), encoding="utf-8")
+
+    def _load_profile_text(self) -> Optional[str]:
+        try:
+            text = self.profile_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return None
+        return text or None
+
+    def _profile_timestamp(self) -> Optional[str]:
+        try:
+            return (
+                datetime.fromtimestamp(self.profile_path.stat().st_mtime, timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        except Exception:
+            return None
+
+    def _with_profile_results(self, query: str, results: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        if limit <= 0:
+            return []
+        profile = self.profile_memory()
+        if not profile or not self._profile_matches(query, profile["text"]):
+            return results[:limit]
+        without_profile = [
+            item
+            for item in results
+            if item.get("id") != profile["id"] and item.get("provider") != "profile_file"
+        ]
+        return [profile] + without_profile[: max(0, limit - 1)]
+
+    def _profile_matches(self, query: str, text: str) -> bool:
+        lower_query = query.lower()
+        if any(phrase in lower_query for phrase in ["about me", "know about me", "who am i", "my profile"]):
+            return True
+        ignored = {
+            "about",
+            "are",
+            "for",
+            "from",
+            "know",
+            "memory",
+            "remember",
+            "system",
+            "tell",
+            "that",
+            "the",
+            "this",
+            "user",
+            "what",
+            "who",
+            "with",
+            "you",
+            "your",
+        }
+        parts = [part for part in re.findall(r"[a-z0-9#]+", lower_query) if len(part) > 2]
+        if not parts:
+            return True
+        terms = {part for part in parts if part not in ignored}
+        if not terms:
+            return False
+        lower_text = text.lower()
+        return any(term in lower_text for term in terms)
 
     def _category_for(self, text: str, metadata: Dict[str, Any]) -> str:
         if metadata.get("category"):

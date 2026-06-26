@@ -82,6 +82,26 @@ public struct IntentRouter: Sendable {
         "on screen"
     ]
 
+    /// User-facing phrases that mean "skip local answers and use the provider
+    /// backed brain for this turn." "Clout" is accepted as a spoken/typed alias
+    /// for the intended cloud-agent command.
+    public static let cloudAgentPhrases: [String] = [
+        "use cloud agent",
+        "use the cloud agent",
+        "use a cloud agent",
+        "ask cloud agent",
+        "ask the cloud agent",
+        "cloud agent",
+        "send this to cloud",
+        "route this to cloud",
+        "use clout agent",
+        "use the clout agent",
+        "use a clout agent",
+        "ask clout agent",
+        "ask the clout agent",
+        "clout agent"
+    ]
+
     public func requiresScreenContext(_ transcript: String) -> Bool {
         let lower = normalized(transcript)
         return Self.screenContextPhrases.contains { lower.contains($0) }
@@ -108,6 +128,11 @@ public struct IntentRouter: Sendable {
             "translate this"
         ]
         return phrases.contains { lower.contains($0) }
+    }
+
+    public func prefersCloudAgent(_ transcript: String) -> Bool {
+        let lower = normalized(transcript)
+        return Self.cloudAgentPhrases.contains { lower.contains($0) }
     }
 
     public func isMemoryRequest(_ transcript: String) -> Bool {
@@ -177,6 +202,9 @@ public struct IntentRouter: Sendable {
     /// `JarvisAppModel.brainMode` and the Python `_task_type` heuristic.
     public func mode(for transcript: String, hasBrowserContext: Bool) -> BrainMode {
         let lower = normalized(transcript)
+        if prefersCloudAgent(transcript) {
+            return .smart
+        }
         if Self.isPageSummaryRequest(lower) {
             return .fast
         }

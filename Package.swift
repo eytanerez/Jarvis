@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "JarvisCore", targets: ["JarvisCore"]),
         .library(name: "JarvisMac", targets: ["JarvisMac"]),
         .library(name: "JarvisContext", targets: ["JarvisContext"]),
+        .library(name: "JarvisDictation", targets: ["JarvisDictation"]),
         .library(name: "JarvisUI", targets: ["JarvisUI"])
     ],
     targets: [
@@ -41,8 +42,17 @@ let package = Package(
             ]
         ),
         .target(
+            name: "JarvisDictation",
+            dependencies: ["JarvisCore", "JarvisMac"],
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("ApplicationServices"),
+                .linkedFramework("SwiftUI")
+            ]
+        ),
+        .target(
             name: "JarvisUI",
-            dependencies: ["JarvisCore", "JarvisMac", "JarvisContext"],
+            dependencies: ["JarvisCore", "JarvisMac", "JarvisContext", "JarvisDictation"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("SwiftUI")

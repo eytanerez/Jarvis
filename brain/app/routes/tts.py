@@ -14,7 +14,7 @@ async def tts_status(
     forceRefresh: bool = False,
     container: ServiceContainer = Depends(get_container),
 ) -> dict:
-    # Fast and non-blocking by default: the Chatterbox subprocess probe is cached
+    # Fast and non-blocking by default: the F5-TTS subprocess probe is cached
     # and only re-run when ``forceRefresh`` is requested (manual debug refresh).
     return container.tts_service.status(force_refresh=forceRefresh)
 
@@ -28,9 +28,9 @@ async def tts_synthesize(request: TTSRequest, container: ServiceContainer = Depe
             speed=request.speed,
             engine=request.engine,
             reference_audio_path=request.referenceAudioPath,
-            exaggeration=request.exaggeration,
-            cfg_weight=request.cfgWeight,
-            style_preset=request.stylePreset,
+            reference_text=request.referenceText,
+            cfg_strength=request.cfgStrength,
+            nfe_step=request.nfeStep,
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
