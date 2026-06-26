@@ -5,12 +5,15 @@ import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict
 
-from .chat_service import ChatService
+from .core.service_container import ServiceContainer
 from .security import token_is_valid
 
 
 def run(port: int) -> None:
-    service = ChatService()
+    # Use the same shared container as the FastAPI app so the fallback server
+    # talks to one set of services.
+    container = ServiceContainer()
+    service = container.chat_service
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802

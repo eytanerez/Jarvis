@@ -27,8 +27,16 @@ class BrainTests(unittest.TestCase):
             "JARVIS_PROVIDER_ORDER",
             "JARVIS_BRAIN_HOME",
             "JARVIS_FILE_INDEX_ENABLED",
+            "JARVIS_FILE_INDEX_MODE",
             "JARVIS_FILE_INDEX_APPROVED_FOLDERS",
             "JARVIS_FILE_INDEX_EXCLUSIONS",
+            "JARVIS_FILE_INDEX_MAX_BATCH",
+            "JARVIS_FILE_INDEX_MIN_REINDEX_SECONDS",
+            "JARVIS_FILE_INDEX_INTERVAL_SECONDS",
+            "JARVIS_PERFORMANCE_MODE",
+            "JARVIS_TTS_STATUS_TTL_SECONDS",
+            "JARVIS_TTS_KOKORO_IDLE_UNLOAD",
+            "JARVIS_WEB_SEARCH_MODE",
         ]:
             os.environ.pop(key, None)
 
@@ -362,8 +370,9 @@ class BrainTests(unittest.TestCase):
         from fastapi.testclient import TestClient
         from app import main
 
-        original = main.tts_service.synthesize
-        main.tts_service.synthesize = lambda text, **kwargs: b"RIFFfake"
+        tts = main.container.tts_service
+        original = tts.synthesize
+        tts.synthesize = lambda text, **kwargs: b"RIFFfake"
         os.environ.pop("JARVIS_BRAIN_TOKEN", None)
         os.environ["JARVIS_BRAIN_ALLOW_INSECURE"] = "1"
         try:
@@ -373,7 +382,7 @@ class BrainTests(unittest.TestCase):
             self.assertEqual(response.headers["content-type"], "audio/wav")
             self.assertEqual(response.content, b"RIFFfake")
         finally:
-            main.tts_service.synthesize = original
+            tts.synthesize = original
             os.environ.pop("JARVIS_BRAIN_ALLOW_INSECURE", None)
 
     def test_auth_fails_closed_without_token(self):
@@ -431,6 +440,188 @@ class BrainTests(unittest.TestCase):
             self.assertEqual(audio, b"RIFFchatter")
             self.assertEqual(fake.kwargs["exaggeration"], 0.7)
             self.assertEqual(fake.kwargs["cfg_weight"], 0.4)
+
+
+    # -- Priority 1: file indexer ------------------------------------------
+
+    def test_file_index_default_mode_is_manual_with_status_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["JARVIS_BRAIN_HOME"] = directory
+            index = FileIndexService()
+            self.assertEqual(index.mode, "manual")
+            status = index.status()
+            for key in [
+                "indexingMode",
+                "lastFullReindexAt",
+                "lastIncrementalScanAt",
+                "currentFile",
+                "filesScannedThisRun",
+                "filesSkippedThisRun",
+            ]:
+                self.assertIn(key, status)
+            self.assertEqual(status["indexingMode"], "manual")
+
+    def test_file_index_off_mode_does_not_scan(self):
+        with tempfile.TemporaryDirectory(dir=str(Path.home())) as brain_home, tempfile.TemporaryDirectory(dir=str(Path.home())) as approved:
+            (Path(approved) / "notes.md").write_text("hello world", encoding="utf-8")
+            os.environ["JARVIS_BRAIN_HOME"] = brain_home
+            os.environ["JARVIS_FILE_INDEX_APPROVED_FOLDERS"] = approved
+            os.environ["JARVIS_FILE_INDEX_MODE"] = "off"
+            index = FileIndexService()
+            self.assertFalse(index.enabled)
+            status = index.reindex()
+            self.assertEqual(status["fileCount"], 0)
+
+    def test_file_index_respects_max_batch(self):
+        with tempfile.TemporaryDirectory(dir=str(Path.home())) as brain_home, tempfile.TemporaryDirectory(dir=str(Path.home())) as approved:
+            for i in range(5):
+                (Path(approved) / f"file{i}.md").write_text(f"content {i}", encoding="utf-8")
+            os.environ["JARVIS_BRAIN_HOME"] = brain_home
+            os.environ["JARVIS_FILE_INDEX_APPROVED_FOLDERS"] = approved
+            os.environ["JARVIS_FILE_INDEX_MAX_BATCH"] = "2"
+            index = FileIndexService()
+            status = index.reindex()
+            self.assertLessEqual(status["filesScannedThisRun"], 2)
+            self.assertLessEqual(status["fileCount"], 2)
+
+    def test_file_index_incremental_skips_unchanged(self):
+        with tempfile.TemporaryDirectory(dir=str(Path.home())) as brain_home, tempfile.TemporaryDirectory(dir=str(Path.home())) as approved:
+            (Path(approved) / "a.md").write_text("alpha notes", encoding="utf-8")
+            os.environ["JARVIS_BRAIN_HOME"] = brain_home
+            os.environ["JARVIS_FILE_INDEX_APPROVED_FOLDERS"] = approved
+            index = FileIndexService()
+            index.reindex()
+            status = index.incremental_scan()
+            self.assertEqual(status["fileCount"], 1)
+            self.assertEqual(status["filesScannedThisRun"], 0)
+            self.assertGreaterEqual(status["filesSkippedThisRun"], 1)
+            self.assertIsNotNone(status["lastIncrementalScanAt"])
+
+    def test_file_index_incremental_prunes_deleted(self):
+        with tempfile.TemporaryDirectory(dir=str(Path.home())) as brain_home, tempfile.TemporaryDirectory(dir=str(Path.home())) as approved:
+            a = Path(approved) / "a.md"
+            b = Path(approved) / "b.md"
+            a.write_text("alpha", encoding="utf-8")
+            b.write_text("beta", encoding="utf-8")
+            os.environ["JARVIS_BRAIN_HOME"] = brain_home
+            os.environ["JARVIS_FILE_INDEX_APPROVED_FOLDERS"] = approved
+            index = FileIndexService()
+            self.assertEqual(index.reindex()["fileCount"], 2)
+            b.unlink()
+            self.assertEqual(index.incremental_scan()["fileCount"], 1)
+
+    def test_file_index_watcher_full_reindex_throttled(self):
+        with tempfile.TemporaryDirectory(dir=str(Path.home())) as brain_home, tempfile.TemporaryDirectory(dir=str(Path.home())) as approved:
+            (Path(approved) / "a.md").write_text("alpha", encoding="utf-8")
+            os.environ["JARVIS_BRAIN_HOME"] = brain_home
+            os.environ["JARVIS_FILE_INDEX_APPROVED_FOLDERS"] = approved
+            index = FileIndexService()
+            index.reindex(source="watcher")
+            (Path(approved) / "b.md").write_text("beta", encoding="utf-8")
+            # A watcher-driven full reindex is throttled within the 15 min window.
+            index.reindex(source="watcher")
+            self.assertEqual(index.status()["fileCount"], 1)
+            # A user-driven reindex always runs.
+            index.reindex(source="user")
+            self.assertEqual(index.status()["fileCount"], 2)
+
+    # -- Priority 2/5: shared, lazy container ------------------------------
+
+    def test_service_container_shares_services(self):
+        from app.core import ServiceContainer
+
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["JARVIS_BRAIN_HOME"] = directory
+            container = ServiceContainer()
+            self.assertIs(container.chat_service.file_index, container.file_index_service)
+            self.assertIs(container.chat_service.memory, container.memory_service)
+            self.assertIs(container.chat_service.providers, container.provider_manager)
+            self.assertIs(container.chat_service.web, container.web_search)
+
+    def test_service_container_is_lazy(self):
+        from app.core import ServiceContainer
+
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["JARVIS_BRAIN_HOME"] = directory
+            container = ServiceContainer()
+            self.assertIsNone(container._tts_service)
+            self.assertIsNone(container._file_index_service)
+            self.assertIsNone(container._chat_service)
+            _ = container.file_index_service
+            self.assertIsNotNone(container._file_index_service)
+            self.assertIsNone(container._tts_service)
+
+    # -- Priority 3: cached TTS status -------------------------------------
+
+    def test_tts_status_caches_chatterbox_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["JARVIS_BRAIN_HOME"] = directory
+            service = TTSService()
+            calls = {"count": 0}
+
+            def fake_probe():
+                calls["count"] += 1
+                return {"importable": False, "device": None}
+
+            service._chatterbox_status = fake_probe
+            service._kokoro_importable = lambda: False
+            service.status()
+            service.status()
+            self.assertEqual(calls["count"], 1)
+            service.status(force_refresh=True)
+            self.assertEqual(calls["count"], 2)
+
+    # -- Priority 6: performance modes -------------------------------------
+
+    def test_performance_settings_modes(self):
+        from app.core import PerformanceSettings
+
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["JARVIS_BRAIN_HOME"] = directory
+            perf = PerformanceSettings()
+            self.assertEqual(perf.mode, "balanced")
+            self.assertEqual(perf.file_index_default_mode, "manual")
+            perf.set_mode("performance")
+            self.assertEqual(perf.file_index_default_mode, "off")
+            self.assertFalse(perf.memory_suggestions)
+            self.assertTrue(perf.shortest_spoken_responses)
+            perf.set_mode("full_context")
+            self.assertEqual(perf.file_index_default_mode, "incremental")
+            self.assertTrue(perf.memory_suggestions)
+            # Persisted across instances.
+            self.assertEqual(PerformanceSettings().mode, "full_context")
+            with self.assertRaises(ValueError):
+                perf.set_mode("nonsense")
+
+    def test_performance_mode_disables_memory_suggestions(self):
+        from app.core import PerformanceSettings
+
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["JARVIS_BRAIN_HOME"] = directory
+            os.environ["JARVIS_PERFORMANCE_MODE"] = "performance"
+            perf = PerformanceSettings()
+            service = ChatService(performance=perf)
+            service.memory.add("User loves espresso", {"kind": "preferences"})
+            self.assertEqual(service._relevant_memories("coffee"), [])
+
+    # -- Priority 7: dashboard ---------------------------------------------
+
+    def test_dashboard_endpoint_is_light(self):
+        from fastapi.testclient import TestClient
+        from app import main
+
+        os.environ.pop("JARVIS_BRAIN_TOKEN", None)
+        os.environ["JARVIS_BRAIN_ALLOW_INSECURE"] = "1"
+        try:
+            client = TestClient(main.app)
+            self.assertEqual(client.get("/health").status_code, 200)
+            response = client.get("/runtime/dashboard")
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            for key in ["performanceMode", "fileIndex", "tts", "providers", "chat", "backgroundServices"]:
+                self.assertIn(key, data)
+        finally:
+            os.environ.pop("JARVIS_BRAIN_ALLOW_INSECURE", None)
 
 
 if __name__ == "__main__":

@@ -68,6 +68,72 @@ public struct TTSStatusReport: Codable, Equatable, Sendable {
     public var lastError: String?
 }
 
+public struct PerformanceToggles: Codable, Equatable, Sendable {
+    public var fileIndexDefaultMode: String
+    public var backgroundFullIndexing: Bool
+    public var chatterboxPreload: Bool
+    public var memorySuggestions: Bool
+    public var screenshotFallback: Bool
+    public var shortestSpokenResponses: Bool
+    public var richerContextPacks: Bool
+}
+
+public struct PerformanceModeReport: Codable, Equatable, Sendable {
+    public var mode: String
+    public var availableModes: [String]
+    public var toggles: PerformanceToggles
+}
+
+public struct DashboardFileIndex: Codable, Equatable, Sendable {
+    public var mode: String?
+    public var currentlyIndexing: Bool?
+    public var currentFile: String?
+    public var fileCount: Int?
+    public var filesScannedThisRun: Int?
+    public var filesSkippedThisRun: Int?
+    public var watching: Bool?
+    public var lastFullReindexAt: String?
+    public var lastIncrementalScanAt: String?
+}
+
+public struct DashboardTTS: Codable, Equatable, Sendable {
+    public var engineLoaded: String?
+    public var kokoroLoaded: Bool?
+    public var chatterboxLoaded: Bool?
+    public var chatterboxWorkerRunning: Bool?
+    public var chatterboxImportable: Bool?
+    public var lastEngineUsed: String?
+    public var lastLatencyMs: Double?
+}
+
+public struct DashboardProviders: Codable, Equatable, Sendable {
+    public var lastModelUsed: String?
+    public var lastLatencyMs: Double?
+    public var lastGeminiLatencyMs: Double?
+    public var latencyByProvider: [String: Double]?
+}
+
+public struct DashboardChat: Codable, Equatable, Sendable {
+    public var lastRoute: String?
+    public var lastContextPackSize: Int?
+}
+
+public struct DashboardService: Codable, Equatable, Sendable, Identifiable {
+    public var name: String
+    public var running: Bool
+    public var id: String { name }
+}
+
+public struct DashboardReport: Codable, Equatable, Sendable {
+    public var brainRunning: Bool?
+    public var performanceMode: String?
+    public var fileIndex: DashboardFileIndex?
+    public var tts: DashboardTTS?
+    public var providers: DashboardProviders?
+    public var chat: DashboardChat?
+    public var backgroundServices: [DashboardService]?
+}
+
 public struct TTSSynthesisRequest: Codable, Equatable, Sendable {
     public var text: String
     public var engine: String
@@ -157,6 +223,22 @@ public final class BrainClient: @unchecked Sendable {
     public func ttsStatus() async throws -> TTSStatusReport {
         let responseData = try await get(path: "/tts/status")
         return try decoder.decode(TTSStatusReport.self, from: responseData)
+    }
+
+    public func performanceStatus() async throws -> PerformanceModeReport {
+        let responseData = try await get(path: "/settings/performance")
+        return try decoder.decode(PerformanceModeReport.self, from: responseData)
+    }
+
+    public func setPerformanceMode(_ mode: String) async throws -> PerformanceModeReport {
+        let body = try encoder.encode(["mode": mode])
+        let responseData = try await post(path: "/settings/performance", body: body)
+        return try decoder.decode(PerformanceModeReport.self, from: responseData)
+    }
+
+    public func dashboard() async throws -> DashboardReport {
+        let responseData = try await get(path: "/runtime/dashboard")
+        return try decoder.decode(DashboardReport.self, from: responseData)
     }
 
     public func synthesizeSpeech(_ request: TTSSynthesisRequest) async throws -> Data {

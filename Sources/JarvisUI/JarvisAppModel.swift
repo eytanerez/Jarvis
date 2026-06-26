@@ -5,6 +5,11 @@ import JarvisCore
 import JarvisMac
 import SwiftUI
 
+private struct FollowUpPromptPlan {
+    var spokenPrompt: String?
+    var listeningPrompt: String?
+}
+
 @MainActor
 public final class JarvisAppModel: ObservableObject {
     public static let shared = JarvisAppModel()
@@ -20,11 +25,14 @@ public final class JarvisAppModel: ObservableObject {
     @Published public var memoryStatus: MemoryStatusReport?
     @Published public var ttsStatus: TTSStatusReport?
     @Published public var fileIndexStatus: FileIndexStatusReport?
+    @Published public var performanceReport: PerformanceModeReport?
+    @Published public var performanceDashboard: DashboardReport?
     @Published public var modelBadgeText = "Local"
     @Published public var activeTurn: AssistantTurn?
     @Published public var turnWarnings: [String] = []
     @Published public var ttsDebugLog: [String] = []
     public var scheduleContextProvider: (@MainActor () -> ScheduleContext?)?
+    public var onLocalActionWillExecute: (@MainActor (AssistantAction) -> Void)?
 
     private let settingsStore = SettingsStore()
     private let keychain = KeychainManager()
@@ -242,9 +250,49 @@ public final class JarvisAppModel: ObservableObject {
         }
     }
 
+    public func setPerformanceMode(_ mode: PerformanceMode) {
+        settings.performance.mode = mode
+        saveSettings()
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            do {
+                performanceReport = try await brainClient.setPerformanceMode(mode.rawValue)
+                statusLine = "Performance mode: \(mode.displayName)"
+                await refreshDashboardAsync()
+            } catch {
+                statusLine = "Performance mode update failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func refreshDashboard() {
+        Task {
+            guard await ensureBrainReady() else {
+                statusLine = "Brain is still starting. Try again in a moment."
+                return
+            }
+            await refreshDashboardAsync()
+            statusLine = "Dashboard refreshed"
+        }
+    }
+
+    private func refreshDashboardAsync() async {
+        guard await brainClient.health() else { return }
+        async let dashboard = try? brainClient.dashboard()
+        async let performance = try? brainClient.performanceStatus()
+        performanceDashboard = await dashboard
+        if let report = await performance {
+            performanceReport = report
+        }
+    }
+
     public func confirm(_ request: ConfirmationRequest) {
         Task {
             phase = .acting(request.title)
+            onLocalActionWillExecute?(request.action)
             let response = await actionExecutor.execute(request.action)
             await present(response: response, userText: "confirmed action")
         }
@@ -418,6 +466,7 @@ public final class JarvisAppModel: ObservableObject {
             Task {
                 flow.markSubmitted()
                 _ = speech.stop()
+                onLocalActionWillExecute?(action)
                 let response = await actionExecutor.execute(action)
                 await present(response: response, userText: normalized)
             }
@@ -730,6 +779,7 @@ public final class JarvisAppModel: ObservableObject {
         }
         if let turnID, !updateActiveTurn(turnID, status: .routing) { return }
         phase = .acting(action.type)
+        onLocalActionWillExecute?(action)
         let response = await actionExecutor.execute(action)
         await present(response: response, userText: userText, turnID: turnID)
     }
@@ -745,6 +795,7 @@ public final class JarvisAppModel: ObservableObject {
         }
 
         for action in response.actions where actionRegistry.risk(for: action) == .green {
+            onLocalActionWillExecute?(action)
             let actionResponse = userFacing(await actionExecutor.execute(action))
             executedActionResponses.append(actionResponse)
             if let turnID, !isActiveTurn(turnID) { return }
@@ -770,9 +821,9 @@ public final class JarvisAppModel: ObservableObject {
         }
 
         modelBadgeText = finalResponse.metadata.model ?? finalResponse.modelUsed ?? finalResponse.metadata.route ?? "Jarvis"
-        let followUpPrompt = nextFollowUpPrompt(userText: userText, answer: finalResponse.answer)
-        pendingFollowUpPrompt = followUpPrompt
-        let spokenText = spokenText(for: finalResponse.speak, followUpPrompt: followUpPrompt)
+        let followUpPlan = nextFollowUpPlan(response: finalResponse)
+        pendingFollowUpPrompt = followUpPlan.listeningPrompt
+        let spokenText = spokenText(for: finalResponse.speak, followUpPrompt: followUpPlan.spokenPrompt)
         responseBeingSpoken = finalResponse
         if let turnID {
             _ = updateActiveTurn(turnID, status: .speaking)
@@ -784,7 +835,7 @@ public final class JarvisAppModel: ObservableObject {
     private func finishSpeechInteraction() {
         guard responseBeingSpoken != nil else { return }
         responseBeingSpoken = nil
-        let prompt = pendingFollowUpPrompt ?? fallbackFollowUpPrompt()
+        let prompt = pendingFollowUpPrompt
         pendingFollowUpPrompt = nil
         completeActiveTurn()
         if endConversationAfterSpeech {
@@ -795,6 +846,12 @@ public final class JarvisAppModel: ObservableObject {
             return
         }
         guard !isInteractivePhase else { return }
+        guard let prompt else {
+            statusLine = "Ready when you are"
+            phase = .idle
+            panelController?.hide()
+            return
+        }
         Task { await startFollowUpListening(prompt: prompt) }
     }
 
@@ -832,13 +889,26 @@ public final class JarvisAppModel: ObservableObject {
         return selected
     }
 
-    private func nextFollowUpPrompt(userText: String, answer: String) -> String {
-        fallbackFollowUpPrompt()
+    private func nextFollowUpPlan(response: StructuredResponse) -> FollowUpPromptPlan {
+        guard settings.session.followUpContextEnabled else {
+            return FollowUpPromptPlan(spokenPrompt: nil, listeningPrompt: nil)
+        }
+        if response.metadata.route == "direct_command", response.results.isEmpty {
+            return FollowUpPromptPlan(spokenPrompt: nil, listeningPrompt: nil)
+        }
+
+        let answerText = "\(response.answer) \(response.speak)"
+        if AssistantTextInspector.containsQuestion(answerText) {
+            return FollowUpPromptPlan(spokenPrompt: nil, listeningPrompt: "Listening for your answer...")
+        }
+
+        let prompt = fallbackFollowUpPrompt()
+        return FollowUpPromptPlan(spokenPrompt: prompt, listeningPrompt: prompt)
     }
 
-    private func spokenText(for answer: String, followUpPrompt: String) -> String {
+    private func spokenText(for answer: String, followUpPrompt: String?) -> String {
         let trimmedAnswer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prompt = followUpPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = followUpPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !prompt.isEmpty else { return ResponseComposer.sanitizeSpokenText(trimmedAnswer) }
         guard !trimmedAnswer.isEmpty else { return prompt }
 
@@ -945,10 +1015,14 @@ public final class JarvisAppModel: ObservableObject {
         async let memory = try? brainClient.memoryStatus()
         async let tts = try? brainClient.ttsStatus()
         async let fileIndex = try? fileIndexClient().status()
+        async let dashboard = try? brainClient.dashboard()
+        async let performance = try? brainClient.performanceStatus()
         providerDiagnostics = await diagnostics
         memoryStatus = await memory
         ttsStatus = await tts
         fileIndexStatus = await fileIndex
+        performanceDashboard = await dashboard
+        performanceReport = await performance
     }
 
     private func fileIndexClient() -> FileIndexClient {

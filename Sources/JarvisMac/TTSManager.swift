@@ -13,8 +13,6 @@ public final class TTSManager: NSObject, @preconcurrency AVAudioPlayerDelegate, 
     private var settings = VoiceSettings()
     private var stoppedIntentionally = false
     private var playbackStarted = false
-    private var localTTSSuppressedUntil: Date?
-    private let localTTSCooldownSeconds: TimeInterval = 300
     public var voiceIdentifier: String?
     public var onPreparing: (() -> Void)?
     public var onPlaybackStarted: (() -> Void)?
@@ -48,11 +46,6 @@ public final class TTSManager: NSObject, @preconcurrency AVAudioPlayerDelegate, 
         log("request \(generationId.uuidString) textLength=\(clipped.count) first80=\"\(String(clipped.prefix(80)))\"")
         let voiceStyle = style ?? VoiceStyle.style(for: .neutral, spokenLimit: limit)
         if settings.ttsEngine == .kokoro || settings.ttsEngine == .chatterbox, let brainClient {
-            if localTTSIsSuppressed {
-                log("local TTS cooldown active; using Apple speech")
-                speakWithApple(clipped, generationId: generationId, allowFallback: true, fallbackUsed: true, style: voiceStyle)
-                return
-            }
             let primaryRequest = synthesisRequest(
                 text: clipped,
                 engine: settings.ttsEngine,
@@ -159,7 +152,6 @@ public final class TTSManager: NSObject, @preconcurrency AVAudioPlayerDelegate, 
             log("stale response ignored \(generationId.uuidString) bytes=\(data.count)")
             return
         }
-        localTTSSuppressedUntil = nil
         log("response \(generationId.uuidString) bytes=\(data.count)")
 
         do {
@@ -259,18 +251,8 @@ public final class TTSManager: NSObject, @preconcurrency AVAudioPlayerDelegate, 
         }
     }
 
-    private var localTTSIsSuppressed: Bool {
-        guard let until = localTTSSuppressedUntil else { return false }
-        if Date() < until {
-            return true
-        }
-        localTTSSuppressedUntil = nil
-        return false
-    }
-
     private func noteLocalTTSUnavailable(_ message: String) {
-        localTTSSuppressedUntil = Date().addingTimeInterval(localTTSCooldownSeconds)
-        log("local TTS unavailable; using Apple fallback for \(Int(localTTSCooldownSeconds))s: \(message)")
+        log("local TTS unavailable for this reply; using Apple fallback once: \(message)")
     }
 
     public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

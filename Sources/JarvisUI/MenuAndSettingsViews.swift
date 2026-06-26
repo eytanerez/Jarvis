@@ -419,6 +419,10 @@ public struct JarvisSettingsView: View {
                 .tabItem { Label("Privacy", systemImage: "hand.raised") }
             voiceSession
                 .tabItem { Label("Voice", systemImage: "speaker.wave.2") }
+            performance
+                .tabItem { Label("Performance", systemImage: "bolt") }
+            dashboard
+                .tabItem { Label("Dashboard", systemImage: "gauge.with.dots.needle.bottom.50percent") }
         }
         .padding(20)
         .frame(
@@ -901,6 +905,157 @@ public struct JarvisSettingsView: View {
     private func settingsProviderDisplayName(_ provider: String?) -> String {
         guard let provider else { return "None" }
         return ProviderID(rawValue: provider)?.displayName ?? provider.capitalized
+    }
+
+    private var performance: some View {
+        SettingsScrollPage {
+            GroupBox {
+                Picker("Mode", selection: Binding(
+                    get: { model.settings.performance.mode },
+                    set: { model.setPerformanceMode($0) }
+                )) {
+                    ForEach(PerformanceMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(model.settings.performance.mode.detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Label("Performance Mode", systemImage: "bolt")
+            }
+
+            if let report = model.performanceReport {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        statusRow("Active mode", report.mode.capitalized)
+                        statusRow("File index default", report.toggles.fileIndexDefaultMode)
+                        statusRow("Background full indexing", settingsYesNo(report.toggles.backgroundFullIndexing))
+                        statusRow("Chatterbox preload", settingsYesNo(report.toggles.chatterboxPreload))
+                        statusRow("Memory suggestions", settingsYesNo(report.toggles.memorySuggestions))
+                        statusRow("Screenshot fallback", settingsYesNo(report.toggles.screenshotFallback))
+                        statusRow("Shortest spoken replies", settingsYesNo(report.toggles.shortestSpokenResponses))
+                        statusRow("Richer context packs", settingsYesNo(report.toggles.richerContextPacks))
+                    }
+                } label: {
+                    Label("Active Policy (from brain)", systemImage: "checklist")
+                }
+            }
+
+            Button("Refresh") { model.refreshDashboard() }
+        }
+        .onAppear { model.refreshDashboard() }
+    }
+
+    private var dashboard: some View {
+        SettingsScrollPage {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Live status of what Jarvis is currently running.")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Refresh") { model.refreshDashboard() }
+            }
+
+            if let report = model.performanceDashboard {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        statusRow("Brain running", settingsYesNo(report.brainRunning ?? false))
+                        statusRow("Performance mode", (report.performanceMode ?? "—").capitalized)
+                    }
+                } label: {
+                    Label("Overview", systemImage: "gauge.with.dots.needle.bottom.50percent")
+                }
+
+                if let fileIndex = report.fileIndex {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 6) {
+                            statusRow("Mode", fileIndex.mode ?? "—")
+                            statusRow("Indexing now", settingsYesNo(fileIndex.currentlyIndexing ?? false))
+                            statusRow("Watching", settingsYesNo(fileIndex.watching ?? false))
+                            statusRow("File count", "\(fileIndex.fileCount ?? 0)")
+                            statusRow("Scanned this run", "\(fileIndex.filesScannedThisRun ?? 0)")
+                            statusRow("Skipped this run", "\(fileIndex.filesSkippedThisRun ?? 0)")
+                            if let current = fileIndex.currentFile, !current.isEmpty {
+                                statusRow("Current file", current)
+                            }
+                        }
+                    } label: {
+                        Label("File Index", systemImage: "folder")
+                    }
+                }
+
+                if let tts = report.tts {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 6) {
+                            statusRow("Engine loaded", tts.engineLoaded ?? "none")
+                            statusRow("Chatterbox worker", settingsYesNo(tts.chatterboxWorkerRunning ?? false))
+                            statusRow("Last engine used", tts.lastEngineUsed ?? "—")
+                            statusRow("Last TTS latency", latencyText(tts.lastLatencyMs))
+                        }
+                    } label: {
+                        Label("Text-to-Speech", systemImage: "speaker.wave.2")
+                    }
+                }
+
+                if let providers = report.providers {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 6) {
+                            statusRow("Last model", providers.lastModelUsed ?? "—")
+                            statusRow("Last latency", latencyText(providers.lastLatencyMs))
+                            statusRow("Last Gemini latency", latencyText(providers.lastGeminiLatencyMs))
+                        }
+                    } label: {
+                        Label("Providers", systemImage: "cpu")
+                    }
+                }
+
+                if let chat = report.chat {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 6) {
+                            statusRow("Last route", chat.lastRoute ?? "—")
+                            statusRow("Last context pack size", "\(chat.lastContextPackSize ?? 0)")
+                        }
+                    } label: {
+                        Label("Last Turn", systemImage: "bubble.left.and.text.bubble.right")
+                    }
+                }
+
+                if let services = report.backgroundServices, !services.isEmpty {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(services) { service in
+                                statusRow(service.name, settingsYesNo(service.running))
+                            }
+                        }
+                    } label: {
+                        Label("Active Background Services", systemImage: "list.bullet")
+                    }
+                }
+            } else {
+                Text("No dashboard data yet. Press Refresh.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { model.refreshDashboard() }
+    }
+
+    private func statusRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func latencyText(_ milliseconds: Double?) -> String {
+        guard let milliseconds else { return "—" }
+        return String(format: "%.0f ms", milliseconds)
     }
 
     private func settingsYesNo(_ value: Bool) -> String {

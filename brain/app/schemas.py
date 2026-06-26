@@ -98,8 +98,13 @@ class WebSearchRequest(BaseModel):
 
 
 class FileIndexControlRequest(BaseModel):
+    mode: Optional[str] = None
     folders: Optional[List[str]] = None
     exclusions: Optional[List[str]] = None
+
+
+class PerformanceModeRequest(BaseModel):
+    mode: str
 
 
 class FileSearchRequest(BaseModel):

@@ -8,7 +8,6 @@ import os
 import re
 import subprocess
 import threading
-import time
 import zipfile
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -78,75 +77,350 @@ class FileIndexService:
         "Library/Caches",
     ]
 
-    def __init__(self) -> None:
+    MODES = ("off", "manual", "incremental")
+    default_max_files_per_batch = 500
+    default_incremental_interval = 300  # seconds between background incremental scans
+    min_incremental_interval = 60
+    default_min_full_reindex_interval = 900  # 15 minutes between watcher-driven full reindexes
+
+    def __init__(self, default_mode: str = "manual") -> None:
         self.home = Path(os.environ.get("JARVIS_BRAIN_HOME", Path.home() / "Library/Application Support/JarvisNotch"))
         self.home.mkdir(parents=True, exist_ok=True)
         self.index_path = self.home / "file_index.json"
         self.lock = threading.RLock()
+        self._mode_lock = threading.RLock()
+        self._run_lock = threading.Lock()
         self.currently_indexing = False
         self.watching = False
         self.failed_files: List[str] = []
+        self.current_file: Optional[str] = None
+        self.files_scanned_this_run = 0
+        self.files_skipped_this_run = 0
+        self.last_full_reindex_at: Optional[datetime] = None
+        self.last_incremental_scan_at: Optional[datetime] = None
         self._watch_thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
+        self._stop_event = threading.Event()  # asks the watcher loop to exit
+        self._cancel_event = threading.Event()  # asks the in-flight scan to stop
+        self._mode = self._resolve_initial_mode(default_mode)
         self._index: Dict[str, Dict[str, Any]] = self._load_index()
 
-    def start(self, folders: Optional[List[str]] = None, exclusions: Optional[List[str]] = None) -> Dict[str, Any]:
+    # -- mode ---------------------------------------------------------------
+
+    def _resolve_initial_mode(self, default_mode: str) -> str:
+        env_mode = os.environ.get("JARVIS_FILE_INDEX_MODE", "").strip().lower()
+        if env_mode in self.MODES:
+            return env_mode
+        # Backwards compatibility with the old on/off env flag.
+        if os.environ.get("JARVIS_FILE_INDEX_ENABLED", "1") == "0":
+            return "off"
+        normalized = (default_mode or "").strip().lower()
+        return normalized if normalized in self.MODES else "manual"
+
+    @property
+    def mode(self) -> str:
+        with self._mode_lock:
+            return self._mode
+
+    def set_mode(self, mode: Optional[str]) -> str:
+        if mode is None:
+            return self.mode
+        normalized = mode.strip().lower()
+        if normalized not in self.MODES:
+            raise ValueError(f"Unknown file index mode: {mode!r}")
+        with self._mode_lock:
+            self._mode = normalized
+        return normalized
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != "off"
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def start(
+        self,
+        mode: Optional[str] = None,
+        folders: Optional[List[str]] = None,
+        exclusions: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         if folders:
             os.environ["JARVIS_FILE_INDEX_APPROVED_FOLDERS"] = "\n".join(folders)
         if exclusions:
             os.environ["JARVIS_FILE_INDEX_EXCLUSIONS"] = "\n".join(exclusions)
-        if not self.enabled:
+        if mode is not None:
+            self.set_mode(mode)
+
+        current = self.mode
+        if current == "off":
+            # Off never watches and never scans automatically.
+            self.stop()
             return self.status()
-        if self.watching:
-            return self.status()
-        self.watching = True
-        self._stop_event.clear()
-        self._watch_thread = threading.Thread(target=self._watch_loop, name="jarvis-file-index", daemon=True)
-        self._watch_thread.start()
+        if current == "incremental":
+            # Full Context mode: a watcher that runs *incremental* scans only,
+            # never a full reindex loop.
+            self._start_watcher()
+        else:
+            # Manual: the user explicitly starting indexing runs a single scan,
+            # but no background loop is created.
+            self._run_once_async()
         return self.status()
 
     def stop(self) -> Dict[str, Any]:
-        self.watching = False
         self._stop_event.set()
+        self._cancel_event.set()
+        with self.lock:
+            self.watching = False
         return self.status()
 
-    def reindex(self, folders: Optional[List[str]] = None, exclusions: Optional[List[str]] = None) -> Dict[str, Any]:
+    def cancel(self) -> Dict[str, Any]:
+        """Cancel an in-flight scan without tearing down the watcher loop."""
+        self._cancel_event.set()
+        return self.status()
+
+    def _start_watcher(self) -> None:
+        with self.lock:
+            if self.watching and self._watch_thread and self._watch_thread.is_alive():
+                return
+            self.watching = True
+        self._stop_event.clear()
+        self._cancel_event.clear()
+        self._watch_thread = threading.Thread(target=self._watch_loop, name="jarvis-file-index", daemon=True)
+        self._watch_thread.start()
+
+    def _run_once_async(self) -> None:
+        if self._run_lock.locked():
+            return
+        self._cancel_event.clear()
+        thread = threading.Thread(target=self._initial_scan, name="jarvis-file-index-once", daemon=True)
+        thread.start()
+
+    def _initial_scan(self, source: str = "user") -> None:
+        with self.lock:
+            empty = not self._index
+        if empty:
+            self.reindex(source=source)
+        else:
+            self.incremental_scan(source=source)
+
+    def _watch_loop(self) -> None:
+        self._initial_scan(source="watcher")
+        while not self._stop_event.wait(self._incremental_interval()):
+            if self.mode != "incremental":
+                break
+            self.incremental_scan(source="watcher")
+        with self.lock:
+            self.watching = False
+
+    # -- scanning -----------------------------------------------------------
+
+    def reindex(
+        self,
+        folders: Optional[List[str]] = None,
+        exclusions: Optional[List[str]] = None,
+        source: str = "user",
+    ) -> Dict[str, Any]:
         if folders:
             os.environ["JARVIS_FILE_INDEX_APPROVED_FOLDERS"] = "\n".join(folders)
         if exclusions:
             os.environ["JARVIS_FILE_INDEX_EXCLUSIONS"] = "\n".join(exclusions)
         if not self.enabled:
             return self.status()
+        # A watcher must never trigger a full reindex more often than the minimum
+        # interval; user-initiated reindexes always run.
+        if source == "watcher" and not self._full_reindex_allowed():
+            return self.status()
+        if not self._run_lock.acquire(blocking=False):
+            return self.status()
 
+        try:
+            self._begin_run()
+            indexed: Dict[str, Dict[str, Any]] = {}
+            max_batch = self._max_files_per_batch()
+            cancelled = False
+            truncated = False
+            for path in self._all_candidate_paths():
+                if self._cancel_event.is_set():
+                    cancelled = True
+                    break
+                if self.files_scanned_this_run >= max_batch:
+                    truncated = True
+                    break
+                self._note_current_file(path)
+                item = self._index_file(path)
+                if item is not None:
+                    indexed[item["id"]] = item
+                    self._bump_scanned()
+                else:
+                    self._bump_skipped()
+            with self.lock:
+                if cancelled or truncated:
+                    # Keep what we already had and merge the partial batch so a
+                    # cancelled/limited run never wipes the existing index.
+                    self._index.update(indexed)
+                else:
+                    self._index = indexed
+                self._save_index()
+                self.last_full_reindex_at = datetime.now(timezone.utc)
+            return self.status()
+        finally:
+            self._end_run()
+            self._run_lock.release()
+
+    def incremental_scan(
+        self,
+        folders: Optional[List[str]] = None,
+        exclusions: Optional[List[str]] = None,
+        source: str = "user",
+    ) -> Dict[str, Any]:
+        if folders:
+            os.environ["JARVIS_FILE_INDEX_APPROVED_FOLDERS"] = "\n".join(folders)
+        if exclusions:
+            os.environ["JARVIS_FILE_INDEX_EXCLUSIONS"] = "\n".join(exclusions)
+        if not self.enabled:
+            return self.status()
+        if not self._run_lock.acquire(blocking=False):
+            return self.status()
+
+        try:
+            self._begin_run()
+            max_batch = self._max_files_per_batch()
+            with self.lock:
+                existing = dict(self._index)
+            seen_ids: set[str] = set()
+            cancelled = False
+            truncated = False
+            for path in self._all_candidate_paths():
+                if self._cancel_event.is_set():
+                    cancelled = True
+                    break
+                if self.files_scanned_this_run >= max_batch:
+                    truncated = True
+                    break
+                file_id = self._path_id(path)
+                seen_ids.add(file_id)
+                if self._is_unchanged(existing.get(file_id), path):
+                    self._bump_skipped()
+                    continue
+                self._note_current_file(path)
+                item = self._index_file(path)
+                if item is not None:
+                    with self.lock:
+                        self._index[item["id"]] = item
+                    self._bump_scanned()
+                else:
+                    self._bump_skipped()
+            # Only prune deletions when the whole tree was scanned this run.
+            if not cancelled and not truncated:
+                self._prune_missing(seen_ids)
+            with self.lock:
+                self._save_index()
+                self.last_incremental_scan_at = datetime.now(timezone.utc)
+            return self.status()
+        finally:
+            self._end_run()
+            self._run_lock.release()
+
+    def _begin_run(self) -> None:
+        self._cancel_event.clear()
         with self.lock:
             self.currently_indexing = True
             self.failed_files = []
+            self.files_scanned_this_run = 0
+            self.files_skipped_this_run = 0
+            self.current_file = None
+
+    def _end_run(self) -> None:
+        with self.lock:
+            self.currently_indexing = False
+            self.current_file = None
+
+    def _note_current_file(self, path: Path) -> None:
+        with self.lock:
+            self.current_file = str(path)
+
+    def _bump_scanned(self) -> None:
+        with self.lock:
+            self.files_scanned_this_run += 1
+
+    def _bump_skipped(self) -> None:
+        with self.lock:
+            self.files_skipped_this_run += 1
+
+    def _all_candidate_paths(self) -> Iterable[Path]:
+        for folder in self.approved_folders:
+            if not folder.exists() or not folder.is_dir():
+                continue
+            yield from self._walk(folder)
+
+    def _is_unchanged(self, existing: Optional[Dict[str, Any]], path: Path) -> bool:
+        if not existing:
+            return False
         try:
-            indexed: Dict[str, Dict[str, Any]] = {}
-            for folder in self.approved_folders:
-                if not folder.exists() or not folder.is_dir():
+            stat = path.stat()
+        except OSError:
+            return False
+        return existing.get("modifiedAt") == self._iso(
+            datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+        )
+
+    def _prune_missing(self, seen_ids: set[str]) -> None:
+        approved = [str(folder) for folder in self.approved_folders]
+        with self.lock:
+            for file_id in list(self._index.keys()):
+                if file_id in seen_ids:
                     continue
-                for path in self._walk(folder):
-                    item = self._index_file(path)
-                    if item is not None:
-                        indexed[item["id"]] = item
-            with self.lock:
-                self._index = indexed
-                self._save_index()
-        finally:
-            with self.lock:
-                self.currently_indexing = False
-        return self.status()
+                path = str(self._index[file_id].get("path", ""))
+                # Only drop entries that belong to a folder we just scanned.
+                if any(path.startswith(folder) for folder in approved):
+                    self._index.pop(file_id, None)
+
+    def _full_reindex_allowed(self) -> bool:
+        if self.last_full_reindex_at is None:
+            return True
+        elapsed = (datetime.now(timezone.utc) - self.last_full_reindex_at).total_seconds()
+        return elapsed >= self._min_full_reindex_interval()
+
+    def _max_files_per_batch(self) -> int:
+        try:
+            value = int(os.environ.get("JARVIS_FILE_INDEX_MAX_BATCH", str(self.default_max_files_per_batch)))
+        except ValueError:
+            return self.default_max_files_per_batch
+        return max(1, value)
+
+    def _incremental_interval(self) -> float:
+        try:
+            value = float(os.environ.get("JARVIS_FILE_INDEX_INTERVAL_SECONDS", str(self.default_incremental_interval)))
+        except ValueError:
+            return float(self.default_incremental_interval)
+        return max(float(self.min_incremental_interval), value)
+
+    def _min_full_reindex_interval(self) -> float:
+        try:
+            value = float(
+                os.environ.get("JARVIS_FILE_INDEX_MIN_REINDEX_SECONDS", str(self.default_min_full_reindex_interval))
+            )
+        except ValueError:
+            return float(self.default_min_full_reindex_interval)
+        return max(0.0, value)
+
+    def _path_id(self, path: Path) -> str:
+        return hashlib.sha256(str(path).encode("utf-8")).hexdigest()
 
     def status(self) -> Dict[str, Any]:
         with self.lock:
             last_index_time = self._last_index_time()
             storage_size = self.index_path.stat().st_size if self.index_path.exists() else 0
             return {
+                "indexingMode": self.mode,
                 "indexedFolders": [str(folder) for folder in self.approved_folders],
                 "fileCount": len(self._index),
                 "lastIndexTime": self._iso(last_index_time) if last_index_time else None,
+                "lastFullReindexAt": self._iso(self.last_full_reindex_at) if self.last_full_reindex_at else None,
+                "lastIncrementalScanAt": self._iso(self.last_incremental_scan_at) if self.last_incremental_scan_at else None,
                 "currentlyIndexing": self.currently_indexing,
+                "currentFile": self.current_file,
+                "filesScannedThisRun": self.files_scanned_this_run,
+                "filesSkippedThisRun": self.files_skipped_this_run,
                 "watching": self.watching,
                 "failedFiles": self.failed_files[:50],
                 "storageSize": storage_size,
@@ -223,10 +497,6 @@ class FileIndexService:
         }
 
     @property
-    def enabled(self) -> bool:
-        return os.environ.get("JARVIS_FILE_INDEX_ENABLED", "1") != "0"
-
-    @property
     def approved_folders(self) -> List[Path]:
         configured = [line.strip() for line in os.environ.get("JARVIS_FILE_INDEX_APPROVED_FOLDERS", "").splitlines() if line.strip()]
         if not configured:
@@ -248,11 +518,6 @@ class FileIndexService:
         configured = [line.strip() for line in os.environ.get("JARVIS_FILE_INDEX_EXCLUSIONS", "").splitlines() if line.strip()]
         merged = list(dict.fromkeys(self.default_exclusions + configured))
         return merged
-
-    def _watch_loop(self) -> None:
-        self.reindex()
-        while not self._stop_event.wait(30):
-            self.reindex()
 
     def _walk(self, folder: Path) -> Iterable[Path]:
         for root, dirs, files in os.walk(folder):

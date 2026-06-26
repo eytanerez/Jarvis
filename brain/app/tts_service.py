@@ -18,6 +18,20 @@ class TTSService:
     MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
     VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 
+    # Cheap, frequently spoken phrases. They are short enough to be persisted in
+    # the on-disk cache on first use, so repeat playback never re-synthesizes.
+    COMMON_PHRASES = (
+        "Got it.",
+        "Done.",
+        "Opening Spotify.",
+        "One sec.",
+        "I can't see that yet.",
+    )
+    default_chatterbox_idle_seconds = 180  # within the 2-5 minute window
+    default_kokoro_idle_seconds = 300
+    default_status_ttl_seconds = 20  # cache window for the chatterbox subprocess probe
+    reaper_interval_seconds = 30
+
     def __init__(self) -> None:
         self.home = Path(os.environ.get("JARVIS_BRAIN_HOME", Path.home() / "Library/Application Support/JarvisNotch"))
         self.kokoro_dir = self.home / "kokoro"
@@ -31,9 +45,22 @@ class TTSService:
         self._brain_dir = Path(__file__).resolve().parents[1]
         self._chatterbox_process: Optional[subprocess.Popen[str]] = None
         self._chatterbox_lock = threading.Lock()
+        # Telemetry + idle tracking.
+        self._last_used: Dict[str, float] = {}
+        self._last_engine_used: Optional[str] = None
+        self._last_latency_ms: Optional[float] = None
+        # Cached chatterbox subprocess probe so /tts/status never blocks on it.
+        self._chatterbox_status_cache: Optional[Dict[str, Any]] = None
+        self._chatterbox_status_at: float = 0.0
+        self._kokoro_importable_cache: Optional[bool] = None
+        # Background reaper that unloads idle engines.
+        self._reaper_thread: Optional[threading.Thread] = None
+        self._reaper_stop = threading.Event()
 
-    def status(self) -> Dict[str, Any]:
-        chatterbox_status = self._chatterbox_status()
+    def status(self, force_refresh: bool = False) -> Dict[str, Any]:
+        chatterbox_status = self._cached_chatterbox_status(force_refresh=force_refresh)
+        # Cheap to do on every poll, and keeps idle heavy engines from lingering.
+        self._maybe_unload_idle_engines()
         return {
             "engine": "kokoro",
             "importable": self._kokoro_importable(),
@@ -42,8 +69,109 @@ class TTSService:
             "cacheDirectory": str(self.cache_dir),
             "chatterboxImportable": bool(chatterbox_status.get("importable")),
             "chatterboxDevice": chatterbox_status.get("device") or self._chatterbox_device,
+            "chatterboxWorkerRunning": self.chatterbox_worker_running(),
+            "kokoroLoaded": self._kokoro is not None,
+            "lastEngineUsed": self._last_engine_used,
+            "lastLatencyMs": self._last_latency_ms,
             "lastError": self.last_error,
         }
+
+    # -- engine lifecycle / idle management --------------------------------
+
+    def chatterbox_worker_running(self) -> bool:
+        return bool(self._chatterbox_process and self._chatterbox_process.poll() is None)
+
+    def reaper_running(self) -> bool:
+        return bool(self._reaper_thread and self._reaper_thread.is_alive())
+
+    def runtime_snapshot(self) -> Dict[str, Any]:
+        """In-memory view for the dashboard. Never runs the subprocess probe."""
+        cached = self._chatterbox_status_cache or {}
+        return {
+            "engineLoaded": "kokoro" if self._kokoro is not None else None,
+            "kokoroLoaded": self._kokoro is not None,
+            "chatterboxLoaded": self._chatterbox is not None,
+            "chatterboxWorkerRunning": self.chatterbox_worker_running(),
+            "chatterboxImportable": bool(cached.get("importable")) if cached else None,
+            "lastEngineUsed": self._last_engine_used,
+            "lastLatencyMs": self._last_latency_ms,
+        }
+
+    def _mark_used(self, engine: str) -> None:
+        self._last_used[engine] = time.monotonic()
+        self._last_engine_used = engine
+        if engine == "chatterbox" and (self.chatterbox_worker_running() or self._chatterbox is not None):
+            self._ensure_reaper()
+
+    def _ensure_reaper(self) -> None:
+        if self._reaper_thread and self._reaper_thread.is_alive():
+            return
+        self._reaper_stop.clear()
+        self._reaper_thread = threading.Thread(target=self._reaper_loop, name="jarvis-tts-reaper", daemon=True)
+        self._reaper_thread.start()
+
+    def _reaper_loop(self) -> None:
+        while not self._reaper_stop.wait(self.reaper_interval_seconds):
+            self._maybe_unload_idle_engines()
+            if not self._has_reapable_engine():
+                break
+
+    def _has_reapable_engine(self) -> bool:
+        if self.chatterbox_worker_running() or self._chatterbox is not None:
+            return True
+        if self._kokoro is not None and self._kokoro_idle_unload_enabled():
+            return True
+        return False
+
+    def _maybe_unload_idle_engines(self) -> None:
+        now = time.monotonic()
+        if self.chatterbox_worker_running() or self._chatterbox is not None:
+            last = self._last_used.get("chatterbox")
+            if last is not None and (now - last) >= self._chatterbox_idle_timeout():
+                self._unload_chatterbox()
+        if self._kokoro is not None and self._kokoro_idle_unload_enabled():
+            last = self._last_used.get("kokoro")
+            if last is not None and (now - last) >= self._kokoro_idle_timeout():
+                self._kokoro = None
+                print("[jarvis-brain] tts kokoro unloaded after inactivity", flush=True)
+
+    def _unload_chatterbox(self) -> None:
+        self._stop_chatterbox_worker()
+        self._chatterbox = None
+        print("[jarvis-brain] tts chatterbox unloaded after inactivity", flush=True)
+
+    def _chatterbox_idle_timeout(self) -> float:
+        return self._env_float("JARVIS_TTS_CHATTERBOX_IDLE_SECONDS", self.default_chatterbox_idle_seconds, minimum=30.0)
+
+    def _kokoro_idle_timeout(self) -> float:
+        return self._env_float("JARVIS_TTS_KOKORO_IDLE_SECONDS", self.default_kokoro_idle_seconds, minimum=30.0)
+
+    def _kokoro_idle_unload_enabled(self) -> bool:
+        return os.environ.get("JARVIS_TTS_KOKORO_IDLE_UNLOAD", "").strip().lower() in {"1", "true", "yes"}
+
+    def _status_ttl_seconds(self) -> float:
+        value = self._env_float("JARVIS_TTS_STATUS_TTL_SECONDS", self.default_status_ttl_seconds, minimum=10.0)
+        return min(value, 30.0)  # keep within the 10-30s window from Priority 3
+
+    def _env_float(self, name: str, default: float, minimum: float = 0.0) -> float:
+        try:
+            value = float(os.environ.get(name, str(default)))
+        except ValueError:
+            return float(default)
+        return max(minimum, value)
+
+    def _cached_chatterbox_status(self, force_refresh: bool = False) -> Dict[str, Any]:
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._chatterbox_status_cache is not None
+            and (now - self._chatterbox_status_at) < self._status_ttl_seconds()
+        ):
+            return self._chatterbox_status_cache
+        status = self._chatterbox_status()
+        self._chatterbox_status_cache = status
+        self._chatterbox_status_at = now
+        return status
 
     def synthesize(
         self,
@@ -61,18 +189,23 @@ class TTSService:
             raise ValueError("No text was provided for speech synthesis.")
 
         engine = (engine or "kokoro").strip().lower()
+        if engine not in {"kokoro", "chatterbox"}:
+            raise ValueError(f"Unsupported TTS engine: {engine}")
+
+        started = time.perf_counter()
         if engine == "chatterbox":
-            return self._synthesize_chatterbox(
+            wav = self._synthesize_chatterbox(
                 normalized,
                 reference_audio_path=reference_audio_path,
                 exaggeration=exaggeration,
                 cfg_weight=cfg_weight,
                 style_preset=style_preset,
             )
-        if engine != "kokoro":
-            raise ValueError(f"Unsupported TTS engine: {engine}")
-
-        return self._synthesize_kokoro(normalized, voice=voice, speed=speed)
+        else:
+            wav = self._synthesize_kokoro(normalized, voice=voice, speed=speed)
+        self._last_latency_ms = (time.perf_counter() - started) * 1000.0
+        self._mark_used(engine)
+        return wav
 
     def _synthesize_kokoro(self, normalized: str, voice: str = "af_heart", speed: float = 1.0) -> bytes:
         voice = voice.strip() or "af_heart"
@@ -206,16 +339,21 @@ class TTSService:
         return base64.b64decode(wav_text)
 
     def _kokoro_importable(self) -> bool:
+        # Importing kokoro_onnx can pull heavy native deps; cache the result so a
+        # frequently-polled /tts/status never repeats the import work.
+        if self._kokoro_importable_cache is not None:
+            return self._kokoro_importable_cache
         try:
             import kokoro_onnx  # noqa: F401
             import soundfile  # noqa: F401
-            return True
+            self._kokoro_importable_cache = True
         except Exception as exc:
             self.last_error = f"Python TTS dependency missing: {exc}"
-            return False
+            self._kokoro_importable_cache = False
+        return self._kokoro_importable_cache
 
     def _chatterbox_importable(self) -> bool:
-        return bool(self._chatterbox_status().get("importable"))
+        return bool(self._cached_chatterbox_status().get("importable"))
 
     def _chatterbox_status(self) -> Dict[str, Any]:
         python = self._chatterbox_python()
@@ -236,7 +374,7 @@ class TTSService:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=30,
+                timeout=15,
                 check=False,
             )
             lines = [line for line in completed.stdout.splitlines() if line.strip()]

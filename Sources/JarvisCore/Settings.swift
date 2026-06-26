@@ -372,6 +372,50 @@ public struct WebSearchSettings: Codable, Equatable, Sendable {
     }
 }
 
+public enum PerformanceMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case performance
+    case balanced
+    case fullContext = "full_context"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .performance: "Performance"
+        case .balanced: "Balanced"
+        case .fullContext: "Full Context"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .performance:
+            "Lightest footprint: no background indexing, no Chatterbox preload, shortest spoken replies, no memory suggestions."
+        case .balanced:
+            "Everyday default: manual file indexing, Kokoro voice, context captured on Option-Space, Gemini only when needed."
+        case .fullContext:
+            "Richest context: incremental indexing of approved folders and memory suggestions. Still no system-folder or 30-second reindex loops."
+        }
+    }
+}
+
+public struct PerformanceSettings: Codable, Equatable, Sendable {
+    public var mode: PerformanceMode
+
+    public init(mode: PerformanceMode = .balanced) {
+        self.mode = mode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case mode
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decodeIfPresent(PerformanceMode.self, forKey: .mode) ?? .balanced
+    }
+}
+
 public struct AppSettings: Codable, Equatable, Sendable {
     public var providers: [ProviderConfig]
     public var providerFallbackOrder: [ProviderID]
@@ -381,6 +425,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var memory: MemorySettings
     public var context: ContextSettings
     public var webSearch: WebSearchSettings
+    public var performance: PerformanceSettings
     public var personality: AssistantPersonality
 
     public init(
@@ -392,6 +437,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         memory: MemorySettings = MemorySettings(),
         context: ContextSettings = ContextSettings(),
         webSearch: WebSearchSettings = WebSearchSettings(),
+        performance: PerformanceSettings = PerformanceSettings(),
         personality: AssistantPersonality = .default
     ) {
         self.providers = providers
@@ -402,6 +448,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.memory = memory
         self.context = context
         self.webSearch = webSearch
+        self.performance = performance
         self.personality = personality
     }
 
@@ -414,6 +461,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case memory
         case context
         case webSearch
+        case performance
         case personality
     }
 
@@ -427,6 +475,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         memory = try container.decodeIfPresent(MemorySettings.self, forKey: .memory) ?? MemorySettings()
         context = try container.decodeIfPresent(ContextSettings.self, forKey: .context) ?? ContextSettings()
         webSearch = try container.decodeIfPresent(WebSearchSettings.self, forKey: .webSearch) ?? WebSearchSettings()
+        performance = try container.decodeIfPresent(PerformanceSettings.self, forKey: .performance) ?? PerformanceSettings()
         personality = try container.decodeIfPresent(AssistantPersonality.self, forKey: .personality) ?? .default
     }
 
@@ -440,6 +489,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         try container.encode(memory, forKey: .memory)
         try container.encode(context, forKey: .context)
         try container.encode(webSearch, forKey: .webSearch)
+        try container.encode(performance, forKey: .performance)
         try container.encode(personality, forKey: .personality)
     }
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +18,8 @@ class ProviderManager:
         self._attempts: List[Dict[str, Any]] = []
         self._last_model_used: Optional[str] = None
         self._last_metadata: Dict[str, Any] = {}
+        self._last_latency_ms: Optional[float] = None
+        self._latency_by_provider: Dict[str, float] = {}
 
     def enabled_chain(self) -> List[str]:
         return self.secrets.enabled_chain()
@@ -51,10 +54,12 @@ class ProviderManager:
         warnings: List[str] = []
         for provider in chain:
             model = self._selected_model_name(provider, task_type)
+            started = time.perf_counter()
             try:
                 if provider == "openai":
                     answer = await self._openai(httpx, messages, task_type)
                     used_model = self._last_model_used_name(model)
+                    self._record_latency(provider, started)
                     self._record_attempt(provider, task_type, used_model, True, "Connected")
                     self._last_metadata = {
                         "route": "cloud_llm",
@@ -66,6 +71,7 @@ class ProviderManager:
                 if provider == "anthropic":
                     answer = await self._anthropic(httpx, messages, task_type)
                     self._last_model_used = f"Anthropic {model}"
+                    self._record_latency(provider, started)
                     self._record_attempt(provider, task_type, model, True, "Connected")
                     self._last_metadata = {
                         "route": "cloud_llm",
@@ -77,6 +83,7 @@ class ProviderManager:
                 if provider == "gemini":
                     answer = await self._gemini(httpx, messages, task_type)
                     used_model = self._last_model_used_name(model)
+                    self._record_latency(provider, started)
                     self._record_attempt(provider, task_type, used_model, True, "Connected")
                     self._last_metadata = {
                         "route": "cloud_llm",
@@ -166,6 +173,17 @@ class ProviderManager:
 
     def last_metadata(self) -> Dict[str, Any]:
         return dict(self._last_metadata)
+
+    def last_latency_ms(self) -> Optional[float]:
+        return self._last_latency_ms
+
+    def latency_by_provider(self) -> Dict[str, float]:
+        return dict(self._latency_by_provider)
+
+    def _record_latency(self, provider: str, started: float) -> None:
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self._last_latency_ms = elapsed_ms
+        self._latency_by_provider[provider] = elapsed_ms
 
     async def _openai(self, httpx: Any, messages: List[Dict[str, str]], task_type: str) -> str:
         preferred = self._openai_model(self._model_for("JARVIS_OPENAI", task_type, self._openai_default(task_type)))

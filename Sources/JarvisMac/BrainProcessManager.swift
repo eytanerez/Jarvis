@@ -106,6 +106,9 @@ public final class BrainProcessManager: @unchecked Sendable {
             env["JARVIS_FILE_INDEX_EXCLUSIONS"] = settings.context.exclusions.joined(separator: "\n")
             env["JARVIS_FILE_INDEX_ALLOW_CLOUD"] = settings.context.allowCloudFileContents ? "1" : "0"
             env["JARVIS_LOCAL_ONLY_MODE"] = settings.context.localOnlyMode ? "1" : "0"
+            // The brain derives its default file-index mode and other resource
+            // policies from the performance mode (Priority 6).
+            env["JARVIS_PERFORMANCE_MODE"] = settings.performance.mode.rawValue
         }
 
         if let provider = providerConfig(for: .openAI) {

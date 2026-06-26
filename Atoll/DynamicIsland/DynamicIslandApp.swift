@@ -131,6 +131,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var optionalShortcutHandlersRegistered = false
     private weak var focusWithoutDevToolsMenuItem: NSMenuItem?
     private weak var focusUseDevToolsMenuItem: NSMenuItem?
+    private weak var activeJarvisViewModel: DynamicIslandViewModel?
     
     // Debouncing mechanism for window size updates
     private var windowSizeUpdateWorkItem: DispatchWorkItem?
@@ -843,9 +844,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         KeyboardShortcuts.isEnabled = Defaults[.enableShortcuts]
         registerOptionalShortcutHandlers()
         updateFeatureShortcutAvailability()
-        JarvisAssistantBridge.shared.start { [weak self] in
-            self?.activateJarvisAssistantFromHotkey()
-        }
+        JarvisAssistantBridge.shared.start(
+            activate: { [weak self] in
+                self?.activateJarvisAssistantFromHotkey()
+            },
+            deactivate: { [weak self] in
+                self?.dismissJarvisAssistantWhenIdle()
+            }
+        )
 
         if !Defaults[.showOnAllDisplays] {
             let viewModel = self.vm
@@ -1183,6 +1189,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         closeNotchWorkItem = nil
 
         let viewModel = jarvisTargetViewModel()
+        activeJarvisViewModel = viewModel
         withAnimation(.smooth) {
             coordinator.currentView = .jarvis
         }
@@ -1192,6 +1199,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             updateWindowSizeForTabSwitch()
         }
         JarvisAssistantBridge.shared.activateConversation()
+    }
+
+    private func dismissJarvisAssistantWhenIdle() {
+        closeNotchWorkItem?.cancel()
+        closeNotchWorkItem = nil
+
+        guard coordinator.currentView == .jarvis else {
+            activeJarvisViewModel = nil
+            return
+        }
+
+        let viewModel = activeJarvisViewModel ?? jarvisTargetViewModel()
+        if viewModel.notchState == .open {
+            withAnimation(.smooth) {
+                viewModel.close()
+            }
+        }
+        if coordinator.currentView == .jarvis {
+            coordinator.currentView = .home
+        }
+        activeJarvisViewModel = nil
     }
 
     private func jarvisTargetViewModel() -> DynamicIslandViewModel {
