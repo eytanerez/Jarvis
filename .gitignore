@@ -2,6 +2,9 @@
 .build/
 .swiftpm/
 dist/
+build/
+release-notes.md
+sparkle_private_key*
 brain/.venv/
 brain/.venv-chatterbox/
 brain/.venv-f5-tts/

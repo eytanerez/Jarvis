@@ -170,6 +170,13 @@ public final class BrainProcessManager: @unchecked Sendable {
         env["JARVIS_BRAIN_TOKEN"] = token
         env["JARVIS_BRAIN_PORT"] = String(port)
         env["JARVIS_BRAIN_HOME"] = applicationSupportPath()
+        // Tell the brain which app build launched it so /runtime/* reports the
+        // real running version and can flag an app/brain version mismatch.
+        for (key, value) in AppVersionInfo.current.brainEnvironment {
+            env[key] = value
+        }
+        // A repo brain path means the developer brain is active, not bundled.
+        env["JARVIS_BRAIN_MODE"] = developmentBrainDirectory() != nil ? "developer" : "bundled"
         if env["JARVIS_F5_TTS_PYTHON"] == nil,
            let f5Python = f5TTSPythonCandidate() {
             env["JARVIS_F5_TTS_PYTHON"] = f5Python.path

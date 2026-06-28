@@ -1,0 +1,9 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Jarvis (beta)</title>
+        <link>https://raw.githubusercontent.com/eytanerez/Jarvis/main/Updates/beta/appcast.xml</link>
+        <description>Jarvis beta channel updates</description>
+        <language>en</language>
+    </channel>
+</rss>

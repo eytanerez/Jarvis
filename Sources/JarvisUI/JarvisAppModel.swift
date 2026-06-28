@@ -51,8 +51,12 @@ public final class JarvisAppModel: ObservableObject {
     @Published public var activeTurn: AssistantTurn?
     @Published public var turnWarnings: [String] = []
     @Published public var ttsDebugLog: [String] = []
+    @Published public var runtimeStatus: RuntimeStatusReport?
     public var scheduleContextProvider: (@MainActor () async -> ScheduleContext?)?
     public var onLocalActionWillExecute: (@MainActor (AssistantAction) -> Void)?
+    /// Wired by the app host (which owns the Sparkle updater) so UI can trigger
+    /// an update check without JarvisUI depending on Sparkle.
+    public var onCheckForUpdates: (() -> Void)?
 
     private let settingsStore = SettingsStore()
     private let keychain = KeychainManager()
@@ -139,6 +143,11 @@ public final class JarvisAppModel: ObservableObject {
         dictation.unregister()
         hotkey.unregister()
         brainProcess.stop()
+    }
+
+    /// Refresh the version/brain runtime status shown in the version panel.
+    public func requestRuntimeStatusRefresh() {
+        Task { await refreshRuntimeStatus() }
     }
 
     public func toggleFromHotkey() {
@@ -1426,6 +1435,8 @@ public final class JarvisAppModel: ObservableObject {
         async let scheduledAgents = try? brainClient.scheduledAgents()
         async let modes = try? brainClient.assistantModes()
         async let capabilities = try? brainClient.capabilities()
+        async let runtime = try? brainClient.runtimeStatus()
+        runtimeStatus = await runtime
         providerDiagnostics = await diagnostics
         memoryStatus = await memory
         ttsStatus = await tts

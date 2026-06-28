@@ -22,6 +22,16 @@
 
 import SwiftUI
 import Sparkle
+import JarvisCore
+
+/// Routes Sparkle to the per-channel appcast feed (stable / beta / dev) chosen
+/// in Settings, so a `dev` build pulls from the dev feed without ever touching
+/// stable. Replaces the static Info.plist `SUFeedURL` at runtime.
+final class JarvisUpdaterDelegate: NSObject, SPUUpdaterDelegate {
+    func feedURLString(for updater: SPUUpdater) -> String? {
+        UpdateChannelStore().current.appcastURLString
+    }
+}
 
 final class CheckForUpdatesViewModel: ObservableObject {
     @Published var canCheckForUpdates = false

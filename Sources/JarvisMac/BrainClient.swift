@@ -665,6 +665,16 @@ public final class BrainClient: @unchecked Sendable {
         return try decoder.decode(DashboardReport.self, from: responseData)
     }
 
+    public func runtimeVersion() async throws -> BrainVersionReport {
+        let responseData = try await get(path: "/runtime/version")
+        return try decoder.decode(BrainVersionReport.self, from: responseData)
+    }
+
+    public func runtimeStatus() async throws -> RuntimeStatusReport {
+        let responseData = try await get(path: "/runtime/status")
+        return try decoder.decode(RuntimeStatusReport.self, from: responseData)
+    }
+
     public func assistantModes() async throws -> AssistantModeListReport {
         let responseData = try await get(path: "/modes")
         return try decoder.decode(AssistantModeListReport.self, from: responseData)

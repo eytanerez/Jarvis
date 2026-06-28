@@ -1,0 +1,85 @@
+name: Release macOS
+
+# Manual release pipeline. The local scripts/release_update.sh works without CI;
+# this workflow automates it once signing/notarization secrets are configured.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Marketing version (X.Y.Z)"
+        required: true
+      channel:
+        description: "Update channel"
+        required: true
+        default: "beta"
+        type: choice
+        options: [dev, beta, stable]
+      release_notes:
+        description: "Release notes (markdown)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
+
+      - name: Import Developer ID certificate
+        if: ${{ env.CERT_B64 != '' }}
+        env:
+          CERT_B64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$CERT_B64" | base64 --decode > cert.p12
+          security import cert.p12 -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          rm -f cert.p12
+
+      - name: Build, notarize, package, appcast
+        env:
+          DEVELOPER_ID_APP: ${{ secrets.DEVELOPER_ID_APP }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          chmod +x scripts/*.sh
+          scripts/release_update.sh --channel "${{ inputs.channel }}" --version "${{ inputs.version }}"
+
+      - name: Write release notes
+        run: printf '%s\n' "${{ inputs.release_notes }}" > release-notes.md
+
+      - name: Create GitHub release and upload DMG
+        env:
+          GH_TOKEN: ${{ secrets.UPDATE_UPLOAD_TOKEN || github.token }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            "dist/Jarvis-${{ inputs.version }}.dmg" \
+            --title "Jarvis ${{ inputs.version }}" \
+            --notes-file release-notes.md \
+            --target "${{ github.sha }}" || \
+          gh release upload "v${{ inputs.version }}" \
+            "dist/Jarvis-${{ inputs.version }}.dmg" --clobber
+
+      - name: Commit updated appcast
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "Updates/${{ inputs.channel }}/appcast.xml" VERSION BUILD_NUMBER UPDATE_CHANNEL
+          git commit -m "release: ${{ inputs.version }} (${{ inputs.channel }})" || echo "nothing to commit"
+          git push || echo "push skipped"

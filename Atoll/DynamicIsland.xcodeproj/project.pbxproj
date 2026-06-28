@@ -322,6 +322,7 @@
 			);
 			inputPaths = (
 				"$(SRCROOT)/../brain/run_brain.py",
+				"$(SRCROOT)/../scripts/copy_brain_bundle.sh",
 			);
 			outputFileListPaths = (
 			);
@@ -330,7 +331,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ -d \"$SRCROOT/../brain\" ]; then\n\tDEST=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/brain\"\n\trm -rf \"$DEST\"\n\tmkdir -p \"$(dirname \"$DEST\")\"\n\t/usr/bin/ditto \"$SRCROOT/../brain\" \"$DEST\"\nfi\n";
+			shellScript = "COPY_SCRIPT=\"$SRCROOT/../scripts/copy_brain_bundle.sh\"\nDEST=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/brain\"\nif [ -x \"$COPY_SCRIPT\" ]; then\n\t\"$COPY_SCRIPT\" \"$DEST\"\nelif [ -d \"$SRCROOT/../brain\" ]; then\n\techo \"warning: $COPY_SCRIPT missing; copying unpruned brain source\"\n\trm -rf \"$DEST\"\n\tmkdir -p \"$(dirname \"$DEST\")\"\n\t/usr/bin/ditto \"$SRCROOT/../brain\" \"$DEST\"\nfi\n";
 		};
 		7EFAA8AA2F6F12F3000A99E8 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;

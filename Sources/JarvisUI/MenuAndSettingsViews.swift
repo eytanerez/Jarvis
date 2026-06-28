@@ -51,6 +51,12 @@ public struct DebugView: View {
                     Spacer()
                     Button("Talk") { model.toggleFromHotkey() }
                 }
+                JarvisVersionPanel(
+                    runtimeStatus: model.runtimeStatus,
+                    onCheckForUpdates: model.onCheckForUpdates,
+                    onRefresh: { model.requestRuntimeStatusRefresh() }
+                )
+                Divider()
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
                 GridRow {
                     Text("Status").foregroundStyle(.secondary)

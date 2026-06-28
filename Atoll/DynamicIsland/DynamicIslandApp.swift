@@ -32,13 +32,23 @@ struct DynamicNotchApp: App {
     @Environment(\.openWindow) var openWindow
 
     let updaterController: SPUStandardUpdaterController
+    private let jarvisUpdaterDelegate = JarvisUpdaterDelegate()
 
     init() {
+        // Start the updater so automatic background checks run, and route it to
+        // the per-channel Jarvis appcast feed (stable / beta / dev).
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+            startingUpdater: true, updaterDelegate: jarvisUpdaterDelegate, userDriverDelegate: nil)
 
         // Initialize the settings window controller with the updater controller
         SettingsWindowController.shared.setUpdaterController(updaterController)
+
+        // Let the Jarvis Debug / version panel trigger an update check without
+        // JarvisUI depending on Sparkle.
+        let updater = updaterController.updater
+        JarvisAssistantBridge.shared.model.onCheckForUpdates = {
+            updater.checkForUpdates()
+        }
     }
 
     var body: some Scene {
@@ -50,6 +60,7 @@ struct DynamicNotchApp: App {
                 openWindow(id: "jarvisDebug")
             }
             Divider()
+            CheckForUpdatesView(updater: updaterController.updater)
             Button("Settings") {
                 SettingsWindowController.shared.showWindow()
             }

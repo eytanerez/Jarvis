@@ -2,20 +2,31 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from ..build_info import status_payload, version_payload
 from ..core.service_container import ServiceContainer
 from .deps import get_container, require_auth
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 
 
+@router.get("/version")
+async def runtime_version() -> dict:
+    """Single source of truth for what is running, for the version dashboard."""
+    return version_payload()
+
+
 @router.get("/status")
 async def runtime_status(container: ServiceContainer = Depends(get_container)) -> dict:
     secrets = container.runtime_secrets
-    return {
-        "providerOrder": list(secrets.providerOrder),
-        "keyPresence": secrets.key_presence(),
-        "activeProvider": secrets.active_provider(),
-    }
+    payload = status_payload()
+    payload.update(
+        {
+            "providerOrder": list(secrets.providerOrder),
+            "keyPresence": secrets.key_presence(),
+            "activeProvider": secrets.active_provider(),
+        }
+    )
+    return payload
 
 
 @router.get("/models")

@@ -21,10 +21,14 @@
 	<true/>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>JarvisUpdateFeedBase</key>
+	<string>https://raw.githubusercontent.com/eytanerez/Jarvis/main/Updates</string>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/Ebullioscopic/Atoll/main/Updates/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/eytanerez/Jarvis/main/Updates/dev/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>q2YQaJ1umGkaIJWMGN9Isj5fx/YlUtxnzHEBqFtfZcg=</string>
+	<string>oo/tH9gA37NVBwZpxbELs02ytOOFTxVwxn8uocgIjAk=</string>
 	<key>UTImportedTypeDeclarations</key>
 	<array>
 		<dict/>
